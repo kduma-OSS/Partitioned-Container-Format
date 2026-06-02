@@ -1,0 +1,19 @@
+# --- Node / TypeScript ---
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# --- generated artefacts ---
+pcf_testvector.bin
+*.bin
+
+# --- editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- macOS ---
+.DS_Store

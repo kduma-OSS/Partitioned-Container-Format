@@ -1,0 +1,34 @@
+name: .NET CI
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'implementations/dotnet/**'
+      - '.github/workflows/dotnet-ci.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'implementations/dotnet/**'
+      - '.github/workflows/dotnet-ci.yml'
+
+defaults:
+  run:
+    working-directory: implementations/dotnet
+
+jobs:
+  test:
+    name: build & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore
+      - run: dotnet build -c Release --no-restore
+      - run: dotnet test -c Release --no-build --verbosity normal

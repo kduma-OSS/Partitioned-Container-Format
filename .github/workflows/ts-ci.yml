@@ -1,0 +1,82 @@
+name: TS CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+defaults:
+  run:
+    working-directory: implementations/ts
+
+jobs:
+  build:
+    name: typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+      - run: npm ci
+      - run: npm run build
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  test-vector:
+    name: regenerate spec test vector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+      - run: npm ci
+      - name: Build and run the test-vector example
+        run: npm run gen-testvector -- pcf_testvector.bin
+      - name: Inspect generated test vector
+        run: |
+          ls -l pcf_testvector.bin
+          test "$(wc -c < pcf_testvector.bin)" = "395"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcf-testvector-ts
+          path: implementations/ts/pcf_testvector.bin
+
+  coverage:
+    name: code coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+      - run: npm ci
+      - name: Generate coverage report (enforces >=95% line / 100% function)
+        run: npm run coverage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov-ts
+          path: implementations/ts/coverage/lcov.info
