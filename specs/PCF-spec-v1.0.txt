@@ -1,0 +1,770 @@
+===============================================================================
+                     Partitioned Container Format (PCF)
+                          Specification Version 1.0
+===============================================================================
+
+Status of This Document
+
+   This document specifies version 1.0 of the Partitioned Container Format
+   (PCF), a language-agnostic binary container for storing arbitrary,
+   partitioned data. It is intended as a stable reference for independent
+   implementations of readers and writers.
+
+   The format version described here is major version 1, minor version 0.
+   The document version is 1.0.
+
+
+-------------------------------------------------------------------------------
+Table of Contents
+-------------------------------------------------------------------------------
+
+   1.  Introduction
+   2.  Conventions and Terminology
+       2.1  Requirement Keywords
+       2.2  Terminology
+       2.3  Data Types and Byte Order
+   3.  File Layout Overview
+   4.  File Header
+   5.  Partition Table
+       5.1  Table Block Header
+       5.2  Partition Entry
+       5.3  Overflow Table Blocks
+   6.  Partition Data Model
+   7.  Reserved Values
+       7.1  Reserved Partition Types
+       7.2  Reserved UID
+   8.  Integrity and Hashing
+       8.1  Hash Algorithm Registry
+       8.2  Hash Field Encoding
+       8.3  Partition Data Hash
+       8.4  Table Block Hash
+       8.5  Hash Cascade
+   9.  Versioning
+   10. Labels
+   11. Algorithms (Informative)
+       11.1 Reading and Iteration
+       11.2 Verifying a Partition
+       11.3 Adding a Partition
+       11.4 Removing a Partition
+       11.5 Compaction
+   12. Conformance and Validation
+   13. Future Considerations (Informative)
+   14. Assumptions and Design Decisions (Informative)
+   15. Test Vectors
+   Appendix A. Field Layout Summary
+
+
+-------------------------------------------------------------------------------
+1. Introduction
+-------------------------------------------------------------------------------
+
+   The Partitioned Container Format (PCF) stores multiple independent regions
+   of bytes ("partitions") inside a single file. The file begins with a fixed
+   header that identifies the file and points to a partition table. The
+   partition table describes each partition: its application-defined type, a
+   unique identifier, an optional label, its location and size, how much of
+   it is used, and an integrity hash of its data.
+
+   PCF is CONTENT-AGNOSTIC. With the exception of two reserved type values
+   (Section 7.1), the format assigns no meaning to partition contents or to
+   partition type numbers. Higher-level conventions -- for example, a
+   partition that acts as an index referencing other partitions by UID -- are
+   defined entirely by the application and are outside the scope of this
+   specification.
+
+   PCF is designed for in-place modification. Partitions are pre-allocated
+   (each may reserve more space than it currently uses) so that appending
+   data does not require relocating other partitions. A separate compaction
+   operation reclaims unused allocated space when a file is considered final.
+
+
+-------------------------------------------------------------------------------
+2. Conventions and Terminology
+-------------------------------------------------------------------------------
+
+2.1  Requirement Keywords
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in RFC 2119.
+
+2.2  Terminology
+
+   File          A single byte sequence on a storage medium conforming to
+                 this specification.
+
+   Reader        Software that opens and interprets a PCF file.
+
+   Writer        Software that creates or modifies a PCF file.
+
+   Partition     A contiguous region of the file holding application data,
+                 described by exactly one Partition Entry.
+
+   Partition     A structure in the file listing Partition Entries. It is
+   Table         composed of one or more Table Blocks linked into a chain.
+
+   Table Block   A Table Block Header followed by zero or more packed
+                 Partition Entries.
+
+   Entry / slot  A Partition Entry. The fixed-size record describing one
+                 partition.
+
+   Overflow      Any Table Block after the first one in the chain.
+   Block
+
+   UID           A 16-byte identifier that is unique among all live
+                 partitions within a single file.
+
+2.3  Data Types and Byte Order
+
+   All multi-byte integers are unsigned and are encoded in LITTLE-ENDIAN
+   byte order.
+
+      u8    8-bit  unsigned integer
+      u16   16-bit unsigned integer
+      u32   32-bit unsigned integer
+      u64   64-bit unsigned integer
+
+   Byte arrays (magic, UID, label, hash) are stored in file order and are
+   NOT subject to endianness conversion.
+
+   This specification describes the file as a sequence of fields read one at
+   a time. It makes NO guarantee about the in-memory alignment of any field.
+   Readers MUST read each field explicitly at its defined offset and MUST NOT
+   rely on mapping the file directly onto a native in-memory structure.
+
+   All offsets in this document are absolute byte offsets from the start of
+   the file (offset 0) unless explicitly stated to be relative to a Table
+   Block.
+
+
+-------------------------------------------------------------------------------
+3. File Layout Overview
+-------------------------------------------------------------------------------
+
+   A PCF file consists of a fixed header, one or more Table Blocks, and the
+   partition data regions. Apart from the header at offset 0, the format does
+   not mandate the relative positions of Table Blocks and partition data; the
+   Writer chooses their placement (see Section 12 and Section 14).
+
+      +======================================+  offset 0
+      |             File Header              |  20 bytes (Section 4)
+      +======================================+
+      |        (writer-defined region)       |
+      +======================================+  partition_table_offset
+      |        Partition Table Block #0      |
+      |  +--------------------------------+  |
+      |  |   Table Block Header  (74 B)   |  |  Section 5.1
+      |  +--------------------------------+  |
+      |  |   Partition Entry [0]  (141 B) |  |
+      |  |   Partition Entry [1]          |  |  Section 5.2
+      |  |   ...                          |  |
+      |  |   Partition Entry [n-1]        |  |
+      |  +--------------------------------+  |
+      +======================================+
+      |   Partition data regions (located    |
+      |   by start_offset in each entry)     |
+      +======================================+
+      |   Overflow Table Block #1 ...        |  linked by next_table_offset
+      |   (anywhere in the file)             |
+      +======================================+
+
+   The Writer is trusted to lay out these regions sensibly. By default
+   partitions SHOULD be placed one after another without overlap, but the
+   format permits gaps between regions and does not, by itself, prohibit
+   overlap (Section 12).
+
+
+-------------------------------------------------------------------------------
+4. File Header
+-------------------------------------------------------------------------------
+
+   The file MUST begin with the following 20-byte header at offset 0.
+
+      Offset  Size  Type   Field
+      ------  ----  -----  --------------------------------------------------
+        0      8    bytes  magic
+        8      2    u16    version_major
+       10      2    u16    version_minor
+       12      8    u64    partition_table_offset
+      ------  ----  -----  --------------------------------------------------
+      Total: 20 bytes
+
+   magic
+      MUST be exactly the following 8 bytes:
+
+         0x89 0x4B 0x50 0x52 0x54 0x0D 0x0A 0x1A
+          \    \____________/    \    \    \
+           \      "KPRT"          \    \    DOS end-of-file (0x1A)
+            \                      \    LF (0x0A)
+             high-bit-set byte      CR (0x0D)
+
+      The non-ASCII high-bit byte detects transport over channels that are
+      not 8-bit clean. The CR LF pair detects line-ending translation. The
+      0x1A byte halts naive text dumps under some operating systems. A Reader
+      MUST reject any file whose first 8 bytes do not match exactly.
+
+   version_major
+      The major format version. A Reader MUST reject a file whose
+      version_major it does not implement (Section 9).
+
+   version_minor
+      The minor format version. A Reader MAY accept a file with a
+      version_minor higher than it implements, ignoring features it does not
+      understand (Section 9).
+
+   partition_table_offset
+      Absolute offset of the first Table Block (Section 5.1). Because offset
+      0 always contains the header, the value 0 is never a valid Table Block
+      location.
+
+   This version of the format defines NO header checksum and NO reserved
+   header padding.
+
+
+-------------------------------------------------------------------------------
+5. Partition Table
+-------------------------------------------------------------------------------
+
+   The partition table is a singly linked chain of one or more Table Blocks.
+   Iteration begins at partition_table_offset and follows next_table_offset
+   until it reaches 0.
+
+5.1  Table Block Header
+
+   Each Table Block begins with the following 74-byte header.
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0      1    u8     partition_count
+        1      8    u64    next_table_offset
+        9      1    u8     table_hash_algo_id
+       10     64    bytes  table_hash
+      ------  ----  -----  --------------------------------------------------
+      Total: 74 bytes
+
+   partition_count
+      Number of Partition Entries stored in THIS block, in the range 0..255.
+      Entries are packed immediately after this header with no gaps. A value
+      of 0 denotes a block with no entries (a valid, though unusual, state).
+
+   next_table_offset
+      Absolute offset of the next Table Block in the chain, or 0 to indicate
+      that this is the last block. A Reader MUST stop chain traversal when it
+      reads 0.
+
+   table_hash_algo_id
+      Identifier of the algorithm used for table_hash (Section 8.1).
+
+   table_hash
+      Integrity hash of this Table Block (Section 8.4).
+
+   The Partition Entries follow immediately:
+
+      entry[i] is located at  block_offset + 74 + i * 141   (0 <= i < count)
+
+5.2  Partition Entry
+
+   Each Partition Entry is a fixed-size 141-byte record.
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0      4    u32    type
+        4     16    bytes  uid
+       20     32    bytes  label
+       52      8    u64    start_offset
+       60      8    u64    max_length
+       68      8    u64    used_bytes
+       76      1    u8     data_hash_algo_id
+       77     64    bytes  data_hash
+      ------  ----  -----  --------------------------------------------------
+      Total: 141 bytes
+
+   type
+      Application-defined partition type. Two values are reserved by this
+      specification (Section 7.1); all other values are available to the
+      application.
+
+   uid
+      16-byte identifier, unique among all live partitions in the file
+      (Section 7.2). The byte order of the 16 bytes is opaque to the format
+      and is stored verbatim. UUID version 7 is RECOMMENDED; any 16-byte
+      identifier MAY be used.
+
+   label
+      32-byte optional human-readable label (Section 10).
+
+   start_offset
+      Absolute offset of the partition's data region.
+
+   max_length
+      Number of bytes reserved (pre-allocated) for this partition, starting
+      at start_offset. The reserved region is
+      [start_offset, start_offset + max_length).
+
+   used_bytes
+      Number of bytes currently used by the partition. The used data occupies
+      the contiguous prefix [start_offset, start_offset + used_bytes). The
+      remaining [start_offset + used_bytes, start_offset + max_length) is free
+      space. used_bytes MUST be <= max_length. The free byte count is the
+      derived value (max_length - used_bytes) and is NOT stored.
+
+   data_hash_algo_id
+      Identifier of the algorithm used for data_hash (Section 8.1).
+
+   data_hash
+      Integrity hash of the partition's used data (Section 8.3).
+
+5.3  Overflow Table Blocks
+
+   Because partition_count is a u8, a single Table Block holds at most 255
+   entries. Additional partitions are stored in further Table Blocks linked
+   by next_table_offset, forming a singly linked chain. Each block has the
+   same structure (Section 5.1) and its own independent table_hash.
+
+   The format does NOT encode the spare capacity of a block. Deciding whether
+   to append an entry to an existing block or to create a new block is solely
+   the Writer's responsibility. A Writer MAY compute the available space by
+   examining the distance from the end of the block's entries to the nearest
+   following region, or MAY simply allocate a new Table Block for new
+   partitions. A Reader never needs this information; it reads exactly
+   partition_count entries from each block and follows the chain.
+
+
+-------------------------------------------------------------------------------
+6. Partition Data Model
+-------------------------------------------------------------------------------
+
+   A partition's used data MUST occupy a contiguous prefix of its reserved
+   region:
+
+      used region : [start_offset,              start_offset + used_bytes)
+      free region : [start_offset + used_bytes, start_offset + max_length)
+
+   The free region's contents are unspecified and MUST be ignored by Readers.
+   Appending data to a partition consists of writing into the free region and
+   increasing used_bytes (and re-hashing; see Section 8.5). When used_bytes
+   would exceed max_length, the partition must be grown or relocated, which is
+   a Writer-side operation outside the guarantees of in-place modification.
+
+
+-------------------------------------------------------------------------------
+7. Reserved Values
+-------------------------------------------------------------------------------
+
+7.1  Reserved Partition Types
+
+   0x00000000  RESERVED / INVALID.
+               MUST NOT be used for a live partition. A type of 0 in an entry
+               counted by partition_count indicates a malformed file (it most
+               commonly arises from uninitialized memory). This value acts as
+               a guard against accidental zero-filled entries.
+
+   0xFFFFFFFF  RAW / BLOB.
+               A partition whose meaning is not constrained by the format.
+               Its interpretation is determined by the application, typically
+               on the basis of other partitions.
+
+   All other type values (0x00000001 .. 0xFFFFFFFE) are available to the
+   application and carry no format-defined meaning.
+
+7.2  Reserved UID
+
+   The all-zero UID (16 bytes of 0x00) is the NIL UID and MUST NOT be used
+   for a live partition. As with type 0, it guards against accidental
+   zero-filled entries.
+
+
+-------------------------------------------------------------------------------
+8. Integrity and Hashing
+-------------------------------------------------------------------------------
+
+8.1  Hash Algorithm Registry
+
+   Each hash field is accompanied by a u8 algorithm identifier. This allows
+   the integrity algorithm to be upgraded without changing the byte layout of
+   the format.
+
+      ID   Algorithm        Digest   Class            Notes
+      ---  ---------------  -------  ---------------  ------------------------
+       0   none                 0 B  none             No verification.
+       1   CRC-32                4 B  non-crypto       CRC-32/ISO-HDLC.
+       2   CRC-32C               4 B  non-crypto       Castagnoli; HW support.
+       3   CRC-64                8 B  non-crypto       Fast checksum.
+       4   MD5                  16 B  broken-crypto    Checksum use only.
+       5   SHA-1                20 B  broken-crypto    Checksum use only.
+      16   SHA-256              32 B  cryptographic    DEFAULT.
+      17   SHA-512              64 B  cryptographic
+      18   BLAKE3               32 B  cryptographic    Fast, cryptographic.
+      ---  ---------------  -------  ---------------  ------------------------
+
+   Identifiers 6..15 are reserved for future non-cryptographic algorithms;
+   19 and above are reserved for future cryptographic algorithms. Implementers
+   MAY register additional algorithms in a future minor version (Section 9).
+
+   The CRC variants are defined precisely as follows:
+
+      CRC-32  (ID 1):  CRC-32/ISO-HDLC.
+                       width=32, reflected poly 0xEDB88320, init=0xFFFFFFFF,
+                       refin=true, refout=true, xorout=0xFFFFFFFF.
+                       (This is the CRC used by zlib, gzip, and PNG.)
+
+      CRC-32C (ID 2):  width=32, reflected poly 0x82F63B78, init=0xFFFFFFFF,
+                       refin=true, refout=true, xorout=0xFFFFFFFF.
+
+   SHA-256 (ID 16) is the DEFAULT and RECOMMENDED algorithm. Algorithms with
+   ID 1..5 detect accidental corruption only and MUST NOT be relied upon for
+   any future cryptographic-signature scheme (Section 13).
+
+8.2  Hash Field Encoding
+
+   Every hash field is a fixed 64-byte field, large enough to hold the
+   largest digest in the registry. The digest is stored LEFT-ALIGNED and the
+   remaining bytes MUST be 0x00.
+
+      Digest-producing algorithms (MD5, SHA-1, SHA-256, SHA-512, BLAKE3):
+         The standard digest byte stream is written starting at byte 0 of the
+         field; bytes beyond the digest length are 0x00.
+
+      CRC algorithms (CRC-32, CRC-32C, CRC-64):
+         The CRC value is encoded as a little-endian integer of its width
+         (4 or 8 bytes) starting at byte 0; remaining bytes are 0x00.
+
+      Algorithm 0 (none):
+         All 64 bytes MUST be 0x00, and the hash MUST NOT be verified.
+
+   A Reader compares only the meaningful bytes for the indicated algorithm. A
+   Writer MUST zero-fill the unused bytes.
+
+8.3  Partition Data Hash
+
+   data_hash (entry field) is computed over the partition's USED data only,
+   that is, over file bytes:
+
+      [start_offset, start_offset + used_bytes)
+
+   When used_bytes == 0, the hash is the digest (or CRC) of the empty input
+   for the selected algorithm. data_hash does not depend on max_length or on
+   the free region, so changing a partition's reservation does not change its
+   data_hash.
+
+8.4  Table Block Hash
+
+   table_hash (Table Block Header field) is computed over the entire Table
+   Block -- the 74-byte header plus its partition_count packed entries:
+
+      [block_offset, block_offset + 74 + partition_count * 141)
+
+   For the purpose of computation the 64-byte table_hash field itself is
+   treated as all-zero. The table_hash_algo_id byte IS included in the input.
+   Any unused space following the entries is NOT part of the input.
+
+   To verify: copy table_hash out, treat the field as zero, recompute over
+   the region above, and compare against the copied value (using the byte
+   semantics of Section 8.2).
+
+8.5  Hash Cascade
+
+   Because a Table Block contains every entry, and each entry contains that
+   partition's data_hash, modifying a partition's data has a cascading effect:
+
+      1. Write the new partition data and update used_bytes.
+      2. Recompute the entry's data_hash.
+      3. Recompute the enclosing Table Block's table_hash.
+
+   Similarly, adding, removing, or relocating a partition changes the entry
+   bytes and therefore requires recomputing the affected Table Block's
+   table_hash. Writers MUST keep these hashes consistent.
+
+
+-------------------------------------------------------------------------------
+9. Versioning
+-------------------------------------------------------------------------------
+
+   The format carries a 16-bit major and a 16-bit minor version in the
+   header.
+
+      A change in version_major denotes an INCOMPATIBLE change (for example,
+      altering a field's size, offset, or the layout of any structure). A
+      Reader MUST reject a file whose version_major it does not implement.
+
+      A change in version_minor denotes a BACKWARD-COMPATIBLE addition that
+      does not alter the byte layout of any existing structure (for example,
+      registering a new hash algorithm ID or assigning meaning to a previously
+      unused reserved value). A Reader implementing major version M MUST be
+      able to read any file with the same M and an equal or lower minor; it
+      SHOULD accept a higher minor, ignoring features it does not understand.
+
+   This document defines version_major = 1, version_minor = 0.
+
+
+-------------------------------------------------------------------------------
+10. Labels
+-------------------------------------------------------------------------------
+
+   The label field is a fixed 32-byte field holding an optional ASCII label.
+
+      Each significant byte MUST be in the range 0x01..0x7F.
+      0x00 is the terminator and padding byte.
+      A Reader reads characters until the first 0x00 OR until 32 bytes have
+      been consumed, whichever comes first. A 32-character label therefore has
+      no terminator.
+      An empty label is all 0x00.
+      A byte >= 0x80 anywhere in the field renders the label invalid; a Reader
+      MUST treat such an entry as malformed.
+
+   Labels are informational. The format does not require labels to be unique
+   and assigns them no semantic meaning.
+
+
+-------------------------------------------------------------------------------
+11. Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+11.1  Reading and Iteration
+
+      read 20-byte header at offset 0
+      verify header.magic
+      if header.version_major not supported: reject
+
+      tbl = header.partition_table_offset
+      while tbl != 0:
+          read 74-byte block header at tbl
+          verify table_hash over [tbl, tbl + 74 + count*141) with hash zeroed
+          for i in 0 .. count-1:
+              entry = read 141 bytes at tbl + 74 + i*141
+              process(entry)
+          tbl = block.next_table_offset
+
+11.2  Verifying a Partition
+
+      data = file[entry.start_offset .. entry.start_offset + entry.used_bytes)
+      h    = hash(entry.data_hash_algo_id, data)
+      ok   = compare(h, entry.data_hash)   // significant bytes only
+
+11.3  Adding a Partition
+
+      // Writer chooses placement; format does not validate it.
+      choose start_offset and max_length (no overlap with other regions)
+      write partition data into [start_offset, start_offset + used_bytes)
+      build entry { type, uid (unique, non-nil), label,
+                    start_offset, max_length, used_bytes,
+                    data_hash_algo_id, data_hash = hash(...) }
+
+      select a target Table Block (writer policy):
+        if an existing block has room:
+            write entry at block + 74 + count*141
+            count = count + 1
+            recompute and write that block's table_hash
+        else:
+            allocate a new block region
+            new block: partition_count = 1, next_table_offset = 0, entry[0]
+            compute its table_hash
+            set previous-tail block.next_table_offset = new block offset
+            recompute and write the previous block's table_hash
+
+11.4  Removing a Partition
+
+      locate the entry at index i within its Table Block
+      // Shift remaining entries down within the SAME block (cheap: metadata
+      // only). Cross-block rebalancing is not performed.
+      for j in i .. count-2:
+          entry[j] = entry[j+1]
+      count = count - 1
+      recompute and write that block's table_hash
+      // The partition's allocated data region becomes free/garbage and is
+      // ignored by Readers; it is reclaimed by compaction.
+      // A block whose count reaches 0 MAY be unlinked from the chain.
+
+11.5  Compaction
+
+      // Reclaims all unused-but-allocated space; intended for a finalized
+      // file. This is a full rewrite.
+      collect all live entries by iterating the chain (11.1)
+      lay out a fresh file:
+          write header
+          write one or more Table Blocks (chained if > 255 entries),
+              e.g., immediately after the header
+          place each partition's data contiguously after the table region:
+              new_start = next free offset
+              max_length = used_bytes        // drop the free tail
+              copy used data to new_start
+              start_offset = new_start
+              // data_hash is unchanged (data content is unchanged)
+      recompute every table_hash
+      set header.partition_table_offset to the first block's offset
+
+
+-------------------------------------------------------------------------------
+12. Conformance and Validation
+-------------------------------------------------------------------------------
+
+   A conforming Reader MUST:
+
+      C1.  Verify magic; reject on mismatch.
+      C2.  Reject a file whose version_major is unsupported (Section 9).
+      C3.  Traverse the Table Block chain starting at partition_table_offset,
+           stopping when next_table_offset == 0.
+      C4.  For each Table Block, verify table_hash (Section 8.4) unless its
+           table_hash_algo_id is 0.
+      C5.  Treat as malformed any live entry whose type is 0x00000000
+           (Section 7.1) or whose uid is the NIL UID (Section 7.2).
+      C6.  Treat as malformed any entry where used_bytes > max_length.
+      C7.  Treat a label as invalid if any byte is >= 0x80 (Section 10).
+      C8.  When verifying partition data, verify data_hash (Section 8.3)
+           unless data_hash_algo_id is 0.
+
+   A conforming Writer MUST:
+
+      W1.  Emit the exact magic and a valid header.
+      W2.  Assign each live partition a unique, non-NIL UID within the file.
+      W3.  Never use reserved type 0x00000000 for a live partition.
+      W4.  Maintain the hash cascade (Section 8.5): keep each data_hash and
+           each table_hash consistent after any modification.
+      W5.  Zero-fill unused bytes of every fixed-size field (label tail, hash
+           tail).
+
+   The format TRUSTS the Writer regarding physical layout. A Reader is NOT
+   required to validate, and by default does not validate:
+
+      - that partition regions do not overlap one another,
+      - that partition regions do not overlap Table Blocks,
+      - that regions are contiguous or gap-free,
+      - the contents of inter-region gaps or partition free regions.
+
+   By default, partitions SHOULD be placed one after another without overlap,
+   but unusual use cases that violate this are permitted. A Reader MAY perform
+   such checks as an optional diagnostic, but a file that fails them is not,
+   by that fact alone, non-conforming.
+
+
+-------------------------------------------------------------------------------
+13. Future Considerations (Informative)
+-------------------------------------------------------------------------------
+
+   Cryptographic signatures. The fixed 64-byte hash fields plus the
+   algorithm-ID indirection are designed so that integrity can be strengthened
+   over time. Cryptographic signatures are typically large and variable in
+   size (e.g., 256 or 512 bytes for RSA) and therefore are intentionally NOT
+   stored inside entries. A future scheme can place a signature in a dedicated
+   partition that signs the Table Block(s) -- which already commit to every
+   partition's data_hash -- so that the fixed entry layout never needs to
+   change. Selecting a cryptographic table_hash algorithm (SHA-256, SHA-512,
+   BLAKE3) is the basis for such a scheme; the CRC, MD5, and SHA-1 options
+   (IDs 1..5) are unsuitable for it.
+
+   Registry growth. New hash algorithms may be added via the reserved ID
+   ranges (6..15 non-cryptographic, 19+ cryptographic) as a minor-version
+   change, since they do not alter byte layout.
+
+   Application type ranges. Applications may, by their own convention,
+   partition the available type space (0x00000001..0xFFFFFFFE) into ranges;
+   the format imposes no such structure.
+
+
+-------------------------------------------------------------------------------
+14. Assumptions and Design Decisions (Informative)
+-------------------------------------------------------------------------------
+
+   This section records assumptions made while specifying version 1.0.
+
+   A1.  Byte order is little-endian throughout, matching the native order of
+        prevailing contemporary hardware and avoiding conversion on those
+        platforms.
+
+   A2.  The file is read field-by-field; no in-memory structure alignment is
+        assumed or guaranteed. The 8-byte magic, 20-byte header, 74-byte block
+        header, and 141-byte entry are deliberately not padded for alignment.
+
+   A3.  Free space is derived: entries store used_bytes, and free space equals
+        max_length - used_bytes. used_bytes is invariant under reservation
+        changes (e.g., compaction), reducing the chance of inconsistency.
+
+   A4.  Partition data is a contiguous prefix; free space is always at the end
+        of the reserved region. Holes within a partition are not represented.
+
+   A5.  All offsets are absolute from the start of the file.
+
+   A6.  Partitions are pre-allocated to support in-place modification without
+        relocating neighbors.
+
+   A7.  Physical layout is the Writer's responsibility; the format does not
+        validate overlap, gaps, or ordering (Section 12).
+
+   A8.  partition_count is a u8 (0..255) per Table Block; total partition count
+        is unbounded via the overflow chain. A block with partition_count = 0
+        is valid.
+
+   A9.  Spare block capacity is not encoded; the append-vs-overflow decision
+        is entirely Writer-side (Section 5.3).
+
+   A10. UID is a 16-byte opaque identifier, unique among live partitions in a
+        file; UUIDv7 is recommended but not enforced. The NIL UID is reserved.
+
+   A11. Type 0x00000000 and the NIL UID act as guards against accidental
+        zero-filled entries; type 0xFFFFFFFF means RAW/BLOB.
+
+   A12. The format is content-agnostic. Constructs such as an index partition
+        that references others by UID are application-level conventions.
+
+   A13. Hash fields are a fixed 64 bytes with a u8 algorithm ID, so the
+        algorithm can be upgraded without changing layout. The header has no
+        checksum: corruption of partition_table_offset is detected indirectly
+        because each Table Block is self-consistent via its own table_hash.
+
+   A14. There is no per-entry flags field and no reserved padding in version
+        1.0. Such additions, if needed, would be introduced in a later
+        version: a non-layout-changing addition as a minor bump, a
+        layout-changing addition as a major bump.
+
+   A15. The all-zero next_table_offset terminates the chain; offset 0 is never
+        a valid Table Block location because the header occupies it.
+
+
+-------------------------------------------------------------------------------
+15. Test Vectors
+-------------------------------------------------------------------------------
+
+   TODO: Provide a complete annotated hex dump of a small conforming file
+   (header, one Table Block with one or two entries, partition data) together
+   with the expected data_hash and table_hash values, so that independent
+   implementations can verify byte-exact conformance.
+
+
+-------------------------------------------------------------------------------
+Appendix A. Field Layout Summary
+-------------------------------------------------------------------------------
+
+   File Header (20 bytes, at offset 0)
+      0   8  bytes  magic = 89 4B 50 52 54 0D 0A 1A
+      8   2  u16    version_major
+     10   2  u16    version_minor
+     12   8  u64    partition_table_offset
+
+   Table Block Header (74 bytes, at partition_table_offset / next_table_offset)
+      0   1  u8     partition_count            (0..255)
+      1   8  u64    next_table_offset          (0 = end of chain)
+      9   1  u8     table_hash_algo_id
+     10  64  bytes  table_hash
+
+   Partition Entry (141 bytes, at block + 74 + i*141)
+      0   4  u32    type                       (0 and FFFFFFFF reserved)
+      4  16  bytes  uid                        (NIL reserved)
+     20  32  bytes  label                      (ASCII, 0x00-padded)
+     52   8  u64    start_offset
+     60   8  u64    max_length
+     68   8  u64    used_bytes                 (<= max_length)
+     76   1  u8     data_hash_algo_id
+     77  64  bytes  data_hash
+
+   Hash Algorithm IDs
+      0  none     1  CRC-32     2  CRC-32C    3  CRC-64
+      4  MD5      5  SHA-1     16  SHA-256   17  SHA-512   18  BLAKE3
+
+===============================================================================
+                          End of Specification v1.0
+===============================================================================
