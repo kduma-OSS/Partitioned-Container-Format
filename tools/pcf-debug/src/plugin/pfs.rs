@@ -56,6 +56,26 @@ fn hash_pair(
     node
 }
 
+/// Render a `compression_algo_id` byte as a labelled enum field (Section 9.5).
+fn compression_field(data: &[u8], off: usize) -> FieldNode {
+    let id = data.get(off).copied().unwrap_or(0);
+    let name = match id {
+        0 => "none",
+        1 => "DEFLATE",
+        2 => "zstd",
+        3 => "brotli",
+        _ => "reserved",
+    };
+    FieldNode::leaf(
+        "compression_algo_id",
+        FieldValue::Enum {
+            raw: id as u64,
+            name: name.into(),
+        },
+        (off as u64, off as u64 + 1),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // PFS_NODE
 // ---------------------------------------------------------------------------
@@ -239,25 +259,26 @@ fn decode_content(data: &[u8], s: usize, warnings: &mut Vec<String>) -> FieldNod
     match content_kind {
         0 | 3 => {} // EMPTY / INHERIT: no further bytes.
         1 => {
-            // DIRECT, 90 bytes total.
-            if let Some(uid) = uid_at(data, s + 1) {
+            // DIRECT, 91 bytes total (Section 7.3).
+            content.push(compression_field(data, s + 1));
+            if let Some(uid) = uid_at(data, s + 2) {
                 content.push(FieldNode::leaf(
                     "content_uid",
                     FieldValue::Uid(uid),
-                    (s as u64 + 1, s as u64 + 17),
+                    (s as u64 + 2, s as u64 + 18),
                 ));
             }
-            let full_size = le_u64(data, s + 17).unwrap_or(0);
+            let full_size = le_u64(data, s + 18).unwrap_or(0);
             content.push(FieldNode::leaf(
                 "full_size",
                 FieldValue::U64(full_size),
-                (s as u64 + 17, s as u64 + 25),
+                (s as u64 + 18, s as u64 + 26),
             ));
-            content.push(hash_pair("full_hash", data, s + 25, s + 26, warnings));
-            check_trailing(data, s + 90, warnings);
+            content.push(hash_pair("full_hash", data, s + 26, s + 27, warnings));
+            check_trailing(data, s + 91, warnings);
         }
         2 => {
-            // DELTA, 164 bytes total.
+            // DELTA, 165 bytes total (Section 7.3).
             let patch_algo = data.get(s + 1).copied().unwrap_or(0);
             let patch_name = if patch_algo == 1 {
                 "VCDIFF"
@@ -272,28 +293,35 @@ fn decode_content(data: &[u8], s: usize, warnings: &mut Vec<String>) -> FieldNod
                 },
                 (s as u64 + 1, s as u64 + 2),
             ));
-            if let Some(uid) = uid_at(data, s + 2) {
+            content.push(compression_field(data, s + 2));
+            if let Some(uid) = uid_at(data, s + 3) {
                 content.push(FieldNode::leaf(
                     "patch_uid",
                     FieldValue::Uid(uid),
-                    (s as u64 + 2, s as u64 + 18),
+                    (s as u64 + 3, s as u64 + 19),
                 ));
             }
-            let full_size = le_u64(data, s + 18).unwrap_or(0);
+            let full_size = le_u64(data, s + 19).unwrap_or(0);
             content.push(FieldNode::leaf(
                 "full_size",
                 FieldValue::U64(full_size),
-                (s as u64 + 18, s as u64 + 26),
+                (s as u64 + 19, s as u64 + 27),
             ));
-            content.push(hash_pair("full_hash", data, s + 26, s + 27, warnings));
-            let base_size = le_u64(data, s + 91).unwrap_or(0);
+            content.push(hash_pair("full_hash", data, s + 27, s + 28, warnings));
+            let base_size = le_u64(data, s + 92).unwrap_or(0);
             content.push(FieldNode::leaf(
                 "base_full_size",
                 FieldValue::U64(base_size),
-                (s as u64 + 91, s as u64 + 99),
+                (s as u64 + 92, s as u64 + 100),
             ));
-            content.push(hash_pair("base_full_hash", data, s + 99, s + 100, warnings));
-            check_trailing(data, s + 164, warnings);
+            content.push(hash_pair(
+                "base_full_hash",
+                data,
+                s + 100,
+                s + 101,
+                warnings,
+            ));
+            check_trailing(data, s + 165, warnings);
         }
         _ => {}
     }

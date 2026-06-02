@@ -58,8 +58,9 @@ pub fn pfs_node_direct(name: &str) -> Vec<u8> {
     r.extend_from_slice(&0o644u32.to_le_bytes()); // mode
     r.extend_from_slice(&(name.len() as u16).to_le_bytes()); // name_len
     r.extend_from_slice(name.as_bytes()); // name
-                                          // content section (DIRECT, 90 bytes)
+                                          // content section (DIRECT, 91 bytes)
     r.push(1); // content_kind = DIRECT
+    r.push(1); // compression_algo_id = DEFLATE
     r.extend_from_slice(&[0xEE; 16]); // content_uid
     r.extend_from_slice(&42u64.to_le_bytes()); // full_size
     r.push(16); // full_hash_algo_id = SHA-256

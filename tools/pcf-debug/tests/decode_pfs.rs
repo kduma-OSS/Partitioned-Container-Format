@@ -69,6 +69,16 @@ fn node_direct_fields_and_ranges() {
         }
     );
 
+    let comp = find(&d.fields, "compression_algo_id").unwrap();
+    assert_eq!(
+        comp.value,
+        FieldValue::Enum {
+            raw: 1,
+            name: "DEFLATE".into()
+        }
+    );
+    assert_eq!(comp.range, Some((54 + 9 + 1, 54 + 9 + 2)));
+
     let full_size = find(&d.fields, "full_size").unwrap();
     assert_eq!(full_size.value, FieldValue::U64(42));
 }

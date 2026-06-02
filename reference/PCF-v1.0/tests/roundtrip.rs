@@ -2,7 +2,7 @@
 
 use std::io::Cursor;
 
-use pcf::{Container, Error, HashAlgo};
+use pcf::{compute_table_hash, Container, Error, HashAlgo};
 
 fn uid(n: u8) -> [u8; 16] {
     let mut u = [0u8; 16];
@@ -134,6 +134,46 @@ fn overflow_chain() {
             vec![i; (i as usize) + 1]
         );
     }
+}
+
+#[test]
+fn read_block_at_exposes_block_view() {
+    // A first-block capacity of 2 forces a second (overflow) block for 3
+    // partitions, so we can walk the chain block-by-block via read_block_at.
+    let mut c = Container::create_with(Cursor::new(Vec::new()), 2, HashAlgo::Sha256).unwrap();
+    for i in 1..=3u8 {
+        c.add_partition(
+            i as u32,
+            uid(i),
+            &format!("p{i}"),
+            &[i; 4],
+            0,
+            HashAlgo::Sha256,
+        )
+        .unwrap();
+    }
+
+    // Walk the chain using only the public block-level API.
+    let mut off = c.header().partition_table_offset;
+    let mut total = 0usize;
+    let mut blocks = 0usize;
+    while off != 0 {
+        let view = c.read_block_at(off).unwrap();
+        assert_eq!(view.offset, off);
+        assert_eq!(view.header.partition_count as usize, view.entries.len());
+        // The exposed table_hash must match a recomputation over the block.
+        let recomputed = compute_table_hash(
+            view.header.table_hash_algo,
+            view.header.next_table_offset,
+            &view.entries,
+        );
+        assert_eq!(view.header.table_hash, recomputed);
+        total += view.entries.len();
+        blocks += 1;
+        off = view.header.next_table_offset;
+    }
+    assert_eq!(total, 3);
+    assert_eq!(blocks, 2);
 }
 
 #[test]

@@ -47,7 +47,7 @@ mod header;
 mod table;
 
 pub use consts::*;
-pub use container::Container;
+pub use container::{BlockView, Container};
 pub use entry::{decode_label, encode_label, PartitionEntry};
 pub use error::{Error, Result};
 pub use hash::HashAlgo;

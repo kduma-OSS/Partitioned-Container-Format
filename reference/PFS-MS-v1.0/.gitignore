@@ -1,0 +1,26 @@
+# --- Rust / Cargo ---
+/target
+Cargo.lock
+**/*.rs.bk
+
+# --- Generated test vector ---
+pfs_ms_testvector.bin
+
+# --- JetBrains (RustRover / IntelliJ) ---
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Editors ---
+*.swp
+*.swo
+*~
+.vscode/

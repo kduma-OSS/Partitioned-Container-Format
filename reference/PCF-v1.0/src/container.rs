@@ -46,6 +46,25 @@ struct BlockInfo {
     next: u64,
 }
 
+/// One table block as read from disk: its absolute `offset`, its parsed
+/// [`TableBlockHeader`] (including `table_hash` and `next_table_offset`), and
+/// its [`PartitionEntry`] list.
+///
+/// This is a read-only view returned by [`Container::read_block_at`]. It exists
+/// so that profiles layered on PCF (which must group blocks, inspect each
+/// block's `table_hash`, and follow non-default `next_table_offset` chains) can
+/// reuse PCF's block parsing and verification rather than re-decoding raw
+/// bytes. It plays no part in the writer's in-memory bookkeeping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockView {
+    /// Absolute file offset of the table block.
+    pub offset: u64,
+    /// Parsed 74-byte block header.
+    pub header: TableBlockHeader,
+    /// The block's entries, in stored order.
+    pub entries: Vec<PartitionEntry>,
+}
+
 /// A PCF container backed by `S`.
 pub struct Container<S: Read + Write + Seek> {
     storage: S,
@@ -218,6 +237,22 @@ impl<S: Read + Write + Seek> Container<S> {
             off = h.next_table_offset;
         }
         Ok(out)
+    }
+
+    /// Read a single table block at an absolute `offset`, returning its parsed
+    /// header (including `table_hash`) and entries as a [`BlockView`].
+    ///
+    /// Unlike [`Self::entries`], which flattens the whole chain, this exposes
+    /// one block at a time so a caller can follow an arbitrary
+    /// `next_table_offset` chain and inspect each block's `table_hash`. It is a
+    /// read-only operation and does not alter the container.
+    pub fn read_block_at(&mut self, offset: u64) -> Result<BlockView> {
+        let (header, entries) = self.read_block(offset)?;
+        Ok(BlockView {
+            offset,
+            header,
+            entries,
+        })
     }
 
     /// Read a partition's used data.

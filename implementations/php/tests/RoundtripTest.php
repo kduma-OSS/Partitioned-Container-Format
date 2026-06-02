@@ -10,6 +10,7 @@ use Kduma\PCF\ErrorKind;
 use Kduma\PCF\HashAlgo;
 use Kduma\PCF\Storage\MemoryStorage;
 use Kduma\PCF\Storage\StreamStorage;
+use Kduma\PCF\TableBlockHeader;
 
 /**
  * End-to-end container tests, porting `roundtrip.rs` and `coverage.rs`.
@@ -264,5 +265,36 @@ final class RoundtripTest extends PcfTestCase
         $out = new MemoryStorage();
         $c->compactInto($out);
         self::assertSame($c->compactedImage(), $out->getContents());
+    }
+
+    public function testReadBlockAtExposesBlockView(): void
+    {
+        // First block capacity of 2 forces a second (overflow) block for 3
+        // partitions, so we can walk the chain block-by-block via readBlockAt.
+        $c = Container::createWith(new MemoryStorage(), 2, HashAlgo::Sha256);
+        for ($i = 1; $i <= 3; ++$i) {
+            $c->addPartition($i, self::uid($i), "p{$i}", str_repeat(\chr($i), 4), 0, HashAlgo::Sha256);
+        }
+
+        $off = $c->header()->partitionTableOffset;
+        $total = 0;
+        $blocks = 0;
+        while ($off !== 0) {
+            $view = $c->readBlockAt($off);
+            self::assertSame($off, $view->offset);
+            self::assertCount($view->header->partitionCount, $view->entries);
+            // The exposed table_hash must match a recomputation over the block.
+            $recomputed = TableBlockHeader::computeTableHash(
+                $view->header->tableHashAlgo,
+                $view->header->nextTableOffset,
+                $view->entries,
+            );
+            self::assertSame($recomputed, $view->header->tableHash);
+            $total += \count($view->entries);
+            ++$blocks;
+            $off = $view->header->nextTableOffset;
+        }
+        self::assertSame(3, $total);
+        self::assertSame(2, $blocks);
     }
 }

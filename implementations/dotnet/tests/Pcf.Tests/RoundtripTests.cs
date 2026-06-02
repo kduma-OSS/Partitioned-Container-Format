@@ -132,4 +132,35 @@ public class RoundtripTests
         reopened.Verify();
         Assert.Equal(5, reopened.Entries().Count);
     }
+
+    [Fact]
+    public void ReadBlockAt_exposes_block_view()
+    {
+        // A first-block capacity of 2 forces a second (overflow) block for 3
+        // partitions, so we can walk the chain block-by-block via ReadBlockAt.
+        var c = Container.CreateWith(new MemoryStream(), 2, HashAlgo.Sha256);
+        for (byte i = 1; i <= 3; i++)
+        {
+            c.AddPartition(i, TestSupport.Uid(i), $"p{i}",
+                new byte[] { i, i, i, i }, 0, HashAlgo.Sha256);
+        }
+
+        ulong off = c.Header.PartitionTableOffset;
+        int total = 0, blocks = 0;
+        while (off != 0)
+        {
+            BlockView view = c.ReadBlockAt(off);
+            Assert.Equal(off, view.Offset);
+            Assert.Equal((int)view.Header.PartitionCount, view.Entries.Count);
+            // The exposed table_hash must match a recomputation over the block.
+            byte[] recomputed = TableBlockHeader.ComputeTableHash(
+                view.Header.TableHashAlgo, view.Header.NextTableOffset, view.Entries);
+            Assert.Equal(recomputed, view.Header.TableHash);
+            total += view.Entries.Count;
+            blocks++;
+            off = view.Header.NextTableOffset;
+        }
+        Assert.Equal(3, total);
+        Assert.Equal(2, blocks);
+    }
 }
