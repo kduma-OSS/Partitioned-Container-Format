@@ -1,0 +1,1160 @@
+===============================================================================
+        PFS-MS -- PCF File System, Multi-Session Profile
+                     Specification Version 1.0
+===============================================================================
+
+Status of This Document
+
+   This document specifies version 1.0 of PFS-MS, an application-level
+   profile that uses the Partitioned Container Format (PCF) version 1.0 to
+   store a hierarchy of files and directories in an APPEND-ONLY, multi-session
+   manner inspired by multi-session optical media.
+
+   PFS-MS does NOT modify, extend, or fork PCF. A PFS-MS file is a fully
+   conforming PCF v1.0 file. All structures defined here live inside PCF
+   partitions and inside the application-defined portions of PCF entries.
+   This profile is layered strictly above the PCF specification; where the
+   two appear to conflict, the PCF specification governs the byte container
+   and this document governs only the interpretation of partition contents.
+
+   The profile version described here is major version 1, minor version 0.
+
+
+-------------------------------------------------------------------------------
+Table of Contents
+-------------------------------------------------------------------------------
+
+   1.  Introduction
+   2.  Relationship to PCF
+   3.  Conventions and Terminology
+       3.1  Requirement Keywords
+       3.2  Terminology
+       3.3  Data Types and Byte Order
+   4.  Profile Model Overview
+       4.1  Append-Only Discipline
+       4.2  The Backward-Linked Session Chain
+       4.3  The Header as the Sole Mutable Superblock
+   5.  Partition Types and Reserved Values
+   6.  Session Structure and Commit Protocol
+       6.1  Anatomy of a Session
+       6.2  Commit Protocol and Durability
+       6.3  Crash Recovery
+   7.  Node Record (PFS_NODE)
+       7.1  Fixed Prefix
+       7.2  Name
+       7.3  Content Section
+   8.  Session Record (PFS_SESSION)
+       8.1  Layout
+       8.2  Inter-Session Hash Chain
+   9.  File Content Model
+       9.1  Content Kinds
+       9.2  Delta Encoding and the Delta Algorithm Registry
+       9.3  Reconstruction
+       9.4  Delta Depth and Re-Baselining
+  10.  Filesystem Semantics
+       10.1 Node Identity and the Root
+       10.2 Liveness
+       10.3 Names and Collisions
+       10.4 Mapping of Filesystem Operations
+  11.  Reader Algorithms (Informative)
+  12.  Writer Algorithms (Informative)
+  13.  Conformance and Validation
+  14.  Versioning
+  15.  Future Considerations (Informative)
+  16.  Assumptions and Design Decisions (Informative)
+  17.  Test Vectors
+   Appendix A. Field Layout Summary
+   Appendix B. Type and Constant Registry
+
+
+-------------------------------------------------------------------------------
+1. Introduction
+-------------------------------------------------------------------------------
+
+   PFS-MS stores a tree of files and directories inside a single PCF file.
+   It behaves like a multi-session optical disc: the file is only ever
+   extended. Each "session" appends new bytes at the end -- file content and
+   the metadata describing that session's changes -- and never rewrites bytes
+   that belong to an earlier session. A reader reconstructs the current state
+   of the filesystem by scanning all sessions and resolving the newest record
+   for each node.
+
+   Three classes of information are stored, each in its own kind of PCF
+   partition:
+
+      - File CONTENT lives in PCF RAW partitions (type 0xFFFFFFFF). A RAW
+        partition holds either the full bytes of a file or a binary patch
+        (delta) against a previous version.
+
+      - NODE metadata lives in PFS_NODE partitions (type 0xAAAA0001). One
+        PFS_NODE partition describes the complete current state of exactly
+        one filesystem node (a file or a directory) as of the session in
+        which it was written.
+
+      - SESSION metadata lives in PFS_SESSION partitions (type 0xAAAA0002).
+        Exactly one PFS_SESSION partition marks each session and carries the
+        inter-session hash chain.
+
+   Because every change is expressed as new metadata appended at the end,
+   PFS-MS supports adding, renaming, modifying, moving, and deleting both
+   files and directories without ever rewriting historical data. Earlier
+   versions of every node remain physically present and can be recovered or
+   reclaimed by a PCF compaction of a finalized file.
+
+
+-------------------------------------------------------------------------------
+2. Relationship to PCF
+-------------------------------------------------------------------------------
+
+   A PFS-MS file MUST be a conforming PCF v1.0 file (PCF Section 12). In
+   particular:
+
+      - The 20-byte PCF File Header is present at offset 0 with the exact
+        PCF magic and version_major = 1, version_minor = 0.
+
+      - Every PFS-MS partition is a normal PCF partition with its own PCF
+        Partition Entry: a unique 16-byte PCF uid, a start_offset, a
+        max_length, a used_bytes, and a data_hash. The PCF uid is distinct
+        from, and unrelated to, the PFS-MS node_id (Section 10.1).
+
+      - The PCF partition table is a chain of PCF Table Blocks linked by
+        next_table_offset, terminated by 0.
+
+   PFS-MS constrains, but does not change, how these PCF facilities are used.
+   The two reserved application type values 0xAAAA0001 and 0xAAAA0002 are an
+   application convention permitted by PCF Section 7.1 (any value in
+   0x00000001..0xFFFFFFFE is available to the application); RAW content uses
+   the PCF-reserved RAW/BLOB type 0xFFFFFFFF.
+
+   A generic PCF reader that knows nothing of this profile will still see a
+   valid file: it will traverse the Table Block chain and enumerate every
+   partition across all sessions as a flat set, and it will verify every
+   table_hash and data_hash. It will not, of course, reconstruct the
+   filesystem tree; that is the job of a PFS-MS reader (Section 11).
+
+
+-------------------------------------------------------------------------------
+3. Conventions and Terminology
+-------------------------------------------------------------------------------
+
+3.1  Requirement Keywords
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in RFC 2119.
+
+3.2  Terminology
+
+   Node          A single file or directory in the logical filesystem,
+                 identified by a stable 16-byte node_id.
+
+   Node Record   A PFS_NODE partition's data: one serialized record giving
+                 the complete state of one node as of one session.
+
+   Session       One append unit: zero or more content RAW partitions, the
+                 PFS_NODE records changed in this unit, exactly one
+                 PFS_SESSION record, and one or more PCF Table Blocks listing
+                 those partitions. (Multi-session-disc analogue: one burn.)
+
+   Head block    The block of a session that is reached first when traversing
+                 the chain; it carries that session's PFS_SESSION record.
+
+   Member block  Any of a session's Table Blocks other than its HEAD block.
+
+   Head          The newest committed session, located via the PCF header's
+                 partition_table_offset.
+
+   Live node     A node that currently exists in the reconstructed tree
+                 (Section 10.2).
+
+   Content       The byte stream of a file. Stored DIRECT (full) or DELTA
+                 (a patch against a previous version) in RAW partitions.
+
+   This document additionally uses, unchanged, the PCF terms File, Reader,
+   Writer, Partition, Partition Table, Table Block, Entry, and UID. A "PCF
+   uid" is the 16-byte PCF partition identifier; a "node_id" is the 16-byte
+   PFS-MS node identifier.
+
+3.3  Data Types and Byte Order
+
+   PFS-MS uses the same conventions as PCF Section 2.3. All multi-byte
+   integers in PFS-MS records are unsigned and LITTLE-ENDIAN (u8, u16, u32,
+   u64). Byte arrays (record magics, node_id, parent_id, PCF uid references,
+   hashes) are stored in file order and are not subject to endianness
+   conversion. Text fields are UTF-8 unless stated otherwise. All "PCF uid"
+   reference fields hold a 16-byte value copied verbatim from the referenced
+   partition's PCF Entry uid.
+
+
+-------------------------------------------------------------------------------
+4. Profile Model Overview
+-------------------------------------------------------------------------------
+
+4.1  Append-Only Discipline
+
+   With one explicit exception (Section 4.3), a Writer MUST NOT modify any
+   byte that has already been committed. New file content, new node records,
+   new session records, and new Table Blocks are written only into previously
+   unused regions at or beyond the current end of meaningful data. Earlier
+   partitions, earlier Table Blocks, and the data they reference are immutable
+   once their session has been committed.
+
+   This discipline is what makes PFS-MS multi-session: like a track burned
+   onto an optical disc, a committed session is frozen.
+
+4.2  The Backward-Linked Session Chain
+
+   PCF permits next_table_offset to point anywhere in the file (PCF Section
+   3, Section 5.1). PFS-MS exploits this: each session writes one or more PCF
+   Table Blocks, and the LAST of a session's blocks points (via
+   next_table_offset) to the HEAD block of the PREVIOUS session (a lower file
+   offset), or 0 if this is the first session. A session's blocks thus form a
+   contiguous run within the single backward chain.
+
+   The PCF chain therefore runs from the newest session toward the oldest:
+
+        header.partition_table_offset --> block(newest) .next -->
+            block(...) .next --> block(oldest) .next = 0
+
+   A consequence is that each block's table_hash is computed once, at the
+   moment its session is committed, over content that never changes
+   thereafter (the block's next_table_offset already points at an existing,
+   immutable predecessor block). No cascading re-hash of earlier blocks is
+   ever required (contrast PCF Section 8.5, which assumes forward growth with
+   in-place edits).
+
+4.3  The Header as the Sole Mutable Superblock
+
+   Committing a session requires publishing the new head. The ONLY permitted
+   in-place modification in PFS-MS is overwriting the 8-byte
+   partition_table_offset field of the PCF header (PCF header offset 12) so
+   that it points to the newly written session's Table Block. No other
+   committed byte is ever rewritten.
+
+   This is the deliberate "soft" append-only choice: file content and all
+   metadata are strictly immutable; a single fixed 8-byte pointer acts as the
+   atomically-swapped superblock, exactly as a multi-session disc updates its
+   table of contents to make the latest session current.
+
+
+-------------------------------------------------------------------------------
+5. Partition Types and Reserved Values
+-------------------------------------------------------------------------------
+
+   PFS-MS assigns the following PCF type values:
+
+      Type         Name          Meaning
+      -----------  ------------  ------------------------------------------
+      0xAAAA0001   PFS_NODE      One serialized Node Record (Section 7).
+      0xAAAA0002   PFS_SESSION   One serialized Session Record (Section 8).
+      0xFFFFFFFF   (PCF RAW)     File content: full bytes or a delta patch.
+      -----------  ------------  ------------------------------------------
+
+   A Writer MUST NOT assign PFS_NODE or PFS_SESSION to a partition whose data
+   is not the corresponding record. A Reader MUST ignore, for filesystem
+   reconstruction, any partition whose type is none of the three above; such
+   partitions are permitted (a PFS-MS file MAY carry unrelated PCF partitions)
+   but carry no PFS-MS meaning.
+
+   The PCF reserved values retain their PCF meaning: type 0x00000000 and the
+   NIL PCF uid MUST NOT be used for any live partition (PCF Section 7).
+
+   The PFS-MS node_id namespace is independent of the PCF uid namespace. The
+   all-zero node_id is reserved for the root (Section 10.1) and MUST NOT name
+   a non-root node.
+
+
+-------------------------------------------------------------------------------
+6. Session Structure and Commit Protocol
+-------------------------------------------------------------------------------
+
+6.1  Anatomy of a Session
+
+   A session is published as ONE OR MORE PCF Table Blocks. The partitions a
+   session introduces are exactly the Partition Entries spread across those
+   blocks, and they MUST comprise:
+
+      - zero or more RAW content partitions (type 0xFFFFFFFF): the full
+        contents and/or delta patches needed by this session's node records;
+
+      - zero or more PFS_NODE partitions (type 0xAAAA0001): one per node
+        changed in this session;
+
+      - exactly one PFS_SESSION partition (type 0xAAAA0002).
+
+   Because a PCF Table Block's partition_count is a u8, a single block holds
+   at most 255 entries. A session whose partitions exceed 255 entries uses
+   SEVERAL Table Blocks; the session is therefore unbounded in size. The
+   blocks of one session form a contiguous run in the backward chain
+   (Section 4.2).
+
+   Head block and member blocks. Among a session's blocks, exactly one is the
+   HEAD block: the block encountered FIRST when traversing the chain from the
+   global head toward the tail (equivalently, the block to which the global
+   head pointer, or the next-newer session's last block, points). The
+   remaining blocks of the session are its MEMBER blocks. The rules are:
+
+      - The session's single PFS_SESSION partition MUST reside in the HEAD
+        block. A MEMBER block MUST NOT contain a PFS_SESSION partition.
+      - Within a session the blocks are chained head -> member -> member ...,
+        and the last member block's next_table_offset points to the previous
+        session's HEAD block (or 0 if this is the oldest session).
+      - The PFS_SESSION record states block_count and a digest committing to
+        the member blocks (Section 8), so a Reader can both delimit the
+        session and verify that none of its blocks was altered.
+
+   The Writer chooses physical placement under the usual PCF rule that the
+   Writer is trusted for layout (PCF Section 3, Section 12). RECOMMENDED
+   layout for a session, written strictly after all previously committed
+   bytes, is: the session's RAW content regions and PFS_NODE/PFS_SESSION
+   partition data first, then the member Table Blocks, and the HEAD block
+   last -- because the HEAD block's table_hash must commit to the member
+   blocks' hashes (via the PFS_SESSION record), so those hashes must already
+   be known when the HEAD block is written.
+
+6.2  Commit Protocol and Durability
+
+   To commit a session, a Writer MUST perform the following in order:
+
+      S1.  Write all of the session's content RAW regions.
+      S2.  Write all of the session's PFS_NODE partition data, and the
+           PFS_SESSION partition data (the latter once its block_count,
+           member-block digest, and prev_session_hash are known).
+      S3.  Compute and write each new Partition Entry's data_hash (PCF 8.3).
+      S4.  Write the session's MEMBER Table Blocks (if any) and compute their
+           table_hashes; chain them head -> member ... so that the last
+           member's next_table_offset = the previous session's HEAD block
+           offset (or 0). Then write the HEAD block last: its entries, its
+           next_table_offset (to the first member block, or directly to the
+           previous session's HEAD block if there are no member blocks), and
+           its table_hash (PCF 8.4). The PFS_SESSION partition placed in the
+           HEAD block MUST already carry the digest of the member blocks
+           written in this step (Section 8.2).
+      S5.  Flush all of the above to stable storage (e.g., fsync).
+      S6.  Overwrite header.partition_table_offset with the HEAD block offset
+           (the single permitted in-place write, Section 4.3).
+      S7.  Flush the header to stable storage.
+
+   The new session becomes current at, and only at, step S6. Steps S1..S5
+   write only into unused regions and do not affect any reader until S6.
+
+   The 8-byte pointer write in S6 SHOULD be a single aligned 8-byte store.
+   Implementations requiring protection against a torn pointer write MAY use
+   an external checkpointing scheme; such schemes are out of scope for this
+   profile.
+
+6.3  Crash Recovery
+
+   If a crash occurs before S6 completes, the header still points to the
+   previous head. Any bytes written by the interrupted session (S1..S4) lie
+   beyond the live chain and are invisible to readers; PCF readers ignore
+   inter-region content (PCF Section 12). A Writer reopening such a file:
+
+      - MAY ignore the trailing garbage and append the next session after it
+        (wasting the abandoned space), OR
+
+      - MAY truncate the file back to the end of the last live, committed
+        region before appending. Truncating UNCOMMITTED trailing bytes is
+        permitted; it does not modify any committed data and therefore does
+        not violate the append-only discipline.
+
+   A Writer MUST NOT truncate or overwrite any region reachable from the
+   committed head.
+
+
+-------------------------------------------------------------------------------
+7. Node Record (PFS_NODE)
+-------------------------------------------------------------------------------
+
+   The data of a PFS_NODE partition is exactly one Node Record. The
+   partition's used_bytes equals the record length; its data_hash covers the
+   record (PCF Section 8.3).
+
+   A Node Record has a fixed prefix, a variable-length name, and -- for live
+   files only -- a content section.
+
+7.1  Fixed Prefix (54 bytes)
+
+      Offset  Size  Type   Field
+      ------  ----  -----  --------------------------------------------------
+        0      4    bytes  record_magic   = 0x50 0x46 0x53 0x4E ("PFSN")
+        4      1    u8     record_version = 1
+        5      1    u8     kind           (1 = file, 2 = directory)
+        6      2    u16    flags          (bit 0 = TOMBSTONE; others reserved)
+        8     16    bytes  node_id
+       24     16    bytes  parent_id
+       40      8    u64    mtime_unix_ms  (0 = unspecified)
+       48      4    u32    mode           (POSIX permission bits; 0 = unset)
+       52      2    u16    name_len       (UTF-8 byte length, 0..1024)
+      ------  ----  -----  --------------------------------------------------
+
+   record_magic
+      MUST be the four bytes "PFSN". A Reader MUST treat a PFS_NODE partition
+      whose data does not begin with this magic as malformed.
+
+   kind
+      1 = file, 2 = directory. All other values are reserved and render the
+      record malformed in this version.
+
+   flags
+      Bit 0 (0x0001) is TOMBSTONE: when set, this record marks the node as
+      deleted as of this session. All other bits are reserved and MUST be 0.
+
+   node_id
+      The 16-byte stable identity of the node (Section 10.1). MUST NOT be the
+      all-zero value except for the root.
+
+   parent_id
+      The node_id of the containing directory. For the root, parent_id equals
+      node_id (both all-zero).
+
+   mtime_unix_ms, mode
+      OPTIONAL metadata. 0 means unspecified. Readers MAY ignore them.
+
+   name_len
+      Number of bytes of the UTF-8 name that follows. MUST be in 0..1024
+      (PFS_MAX_NAME). The root's name_len is 0.
+
+7.2  Name
+
+   Immediately after the fixed prefix, exactly name_len bytes of UTF-8 encode
+   the node's name within its parent directory.
+
+      - The name MUST NOT contain 0x00 or 0x2F ('/').
+      - The name MUST NOT be "." or "..".
+      - Names are case-sensitive and compared byte-for-byte.
+      - Unicode NFC normalization is RECOMMENDED but not required; readers
+        compare the raw bytes.
+      - The root has an empty name (name_len = 0).
+
+7.3  Content Section
+
+   A content section is present if and only if kind == file AND the TOMBSTONE
+   flag is clear. For directories, and for any tombstoned node, the record
+   ends after the name and no content section is present.
+
+   The content section begins with a single byte:
+
+      Offset (rel to section)  Size  Type  Field
+      -----------------------  ----  ----  -------------------------------
+        0                       1    u8    content_kind
+
+   content_kind values and the fields that follow:
+
+      0  EMPTY
+         No further bytes. The file's content is the empty byte string.
+
+      3  INHERIT
+         No further bytes. The file's content is byte-identical to the
+         previous content-bearing version of the same node (Section 9.3).
+         Used for renames/moves that do not change bytes.
+
+      1  DIRECT
+         The full content lives in one RAW partition.
+
+           +1   16  bytes  content_uid          (PCF uid of the RAW partition)
+           +17   8  u64    full_size            (length of the content)
+           +25   1  u8     full_hash_algo_id    (PCF hash registry id)
+           +26  64  bytes  full_hash            (hash of the full content)
+         section length = 90 bytes
+
+      2  DELTA
+         The content is the result of applying a patch to the previous
+         content-bearing version of this node.
+
+           +1    1  u8     patch_algo_id        (Section 9.2)
+           +2   16  bytes  patch_uid            (PCF uid of the patch RAW part.)
+           +18   8  u64    full_size            (length of reconstructed content)
+           +26   1  u8     full_hash_algo_id
+           +27  64  bytes  full_hash            (hash of reconstructed content)
+           +91   8  u64    base_full_size       (length of the base)
+           +99   1  u8     base_full_hash_algo_id
+           +100 64  bytes  base_full_hash       (hash of the base; see 9.3)
+         section length = 164 bytes
+
+   full_hash and base_full_hash use the PCF Hash Algorithm Registry (PCF
+   Section 8.1) and the PCF hash field encoding (left-aligned, zero-padded to
+   the fixed width; here the field is 64 bytes, PCF Section 8.2). full_hash
+   commits to the FULL reconstructed content, not to the stored RAW bytes;
+   the stored RAW bytes are independently protected by the partition's PCF
+   data_hash.
+
+
+-------------------------------------------------------------------------------
+8. Session Record (PFS_SESSION)
+-------------------------------------------------------------------------------
+
+   The data of the single PFS_SESSION partition in a session is exactly one
+   Session Record.
+
+8.1  Layout
+
+      Offset  Size  Type   Field
+      ------  ----  -----  --------------------------------------------------
+        0      4    bytes  record_magic         = 0x50 0x46 0x53 0x53 ("PFSS")
+        4      1    u8     profile_version_major = 1
+        5      1    u8     profile_version_minor = 0
+        6      2    u16    reserved             (MUST be 0)
+        8      8    u64    session_seq          (1-based, strictly increasing)
+       16      8    u64    timestamp_unix_ms    (0 = unspecified)
+       24      1    u8     prev_session_hash_algo_id
+       25     64    bytes  prev_session_hash
+       89      4    u32    block_count          (Table Blocks in this session)
+       93      1    u8     member_digest_algo_id
+       94     64    bytes  member_blocks_digest
+      158      2    u16    change_count         (informational)
+      160      2    u16    writer_len
+      162      M    bytes  writer               (UTF-8, OPTIONAL, M = writer_len)
+      ------  ----  -----  --------------------------------------------------
+      length = 162 + writer_len
+
+   session_seq
+      The session number. The first session is 1; each subsequent session's
+      session_seq MUST be exactly one greater than its predecessor's. This
+      total order is used to resolve "newest wins" (Section 10).
+
+   prev_session_hash_algo_id, prev_session_hash
+      The inter-session hash chain (Section 8.2). For the first session
+      (whose last block has next_table_offset == 0), prev_session_hash_algo_id
+      MUST be 0 and prev_session_hash MUST be 64 zero bytes.
+
+   block_count
+      The number of PCF Table Blocks that make up this session, MUST be >= 1.
+      Beginning at this session's HEAD block (the block holding this record),
+      the next (block_count - 1) blocks in the chain are this session's MEMBER
+      blocks; the block reached after the last member block is the previous
+      session's HEAD block (or the chain terminates with next_table_offset
+      == 0 if this is the oldest session).
+
+   member_digest_algo_id, member_blocks_digest
+      A digest committing to this session's MEMBER blocks (Section 8.2). When
+      block_count == 1 (no member blocks) member_digest_algo_id MUST be 0 and
+      member_blocks_digest MUST be 64 zero bytes.
+
+   change_count
+      The number of PFS_NODE records in this session. Informational; a Reader
+      MAY use it as a sanity check but MUST NOT rely on it for correctness.
+
+   writer
+      OPTIONAL free-form identifier of the producing implementation/agent.
+
+8.2  Inter-Session Hash Chain
+
+   The chain operates at the granularity of whole sessions, with two
+   commitments per session: one binding a session's MEMBER blocks to its HEAD
+   block, and one binding each session to its predecessor.
+
+   Member-block commitment. member_blocks_digest is computed over the stored
+   64-byte table_hash fields of this session's MEMBER blocks, concatenated in
+   chain-traversal order (the first member block reached from the HEAD block,
+   then the next, and so on):
+
+      member_blocks_digest =
+          H( member[0].table_hash || member[1].table_hash || ... )
+
+   using algorithm member_digest_algo_id and the PCF hash field encoding (PCF
+   Section 8.2). Because member_blocks_digest lives in the PFS_SESSION record,
+   which lives in the HEAD block, the HEAD block's table_hash transitively
+   commits to the content of every MEMBER block of the session.
+
+   Inter-session commitment. For every session after the first,
+   prev_session_hash MUST equal the value of the table_hash field stored in
+   the HEAD block of the previous session, and prev_session_hash_algo_id MUST
+   equal that HEAD block's table_hash_algo_id.
+
+   Because the previous session's HEAD block table_hash commits (via the
+   member-block commitment) to all of that session's blocks, and that HEAD
+   block also commits to the previous session's own prev_session_hash, this
+   construction chains every session to the full content of all of its
+   predecessors. Tampering with any byte of any committed session invalidates
+   some block's table_hash and breaks the chain, detectable from the head. The
+   head session itself is protected only by self-consistency (its block
+   table_hashes) until a future signature anchors it (Section 15), exactly as
+   in PCF.
+
+   A Writer MUST set prev_session_hash and member_blocks_digest before
+   computing the PFS_SESSION partition's data_hash and the HEAD block's
+   table_hash; all required predecessor and member values are already known
+   at that point (the previous session is committed; the member blocks are
+   written first, Section 6.2 step S4).
+
+   A Reader verifying the chain MUST, for each session from head toward the
+   tail: recompute every block's table_hash (PCF Section 8.4); confirm that
+   the session's member_blocks_digest matches the recomputed member-block
+   table_hashes; and confirm that the session's prev_session_hash equals the
+   table_hash present in the previous session's HEAD block. Any mismatch means
+   the chain is broken (Section 13).
+
+
+-------------------------------------------------------------------------------
+9. File Content Model
+-------------------------------------------------------------------------------
+
+9.1  Content Kinds
+
+   A file node version states its content as one of: EMPTY (0 bytes), DIRECT
+   (full bytes in a RAW partition), DELTA (a patch against the previous
+   version), or INHERIT (same bytes as the previous version). A directory has
+   no content. A tombstoned node has no content.
+
+9.2  Delta Encoding and the Delta Algorithm Registry
+
+   A DELTA content section names a patch algorithm by patch_algo_id:
+
+      ID   Algorithm   Notes
+      ---  ----------  ---------------------------------------------------
+       0   reserved    MUST NOT be used.
+       1   VCDIFF      RFC 3284 (the default and only REQUIRED algorithm).
+       2   xdelta      Reserved for a future minor version.
+      ---  ----------  ---------------------------------------------------
+
+   A conforming PFS-MS implementation MUST support patch_algo_id = 1 (VCDIFF,
+   RFC 3284). Identifiers 3.. are reserved for future non-conflicting
+   additions via a profile minor-version bump (Section 14); they do not
+   change any byte layout. A Reader encountering a patch_algo_id it does not
+   implement MUST treat the affected file as unreadable but MUST NOT treat the
+   file or the container as malformed on that basis alone.
+
+9.3  Reconstruction
+
+   The current content of a live file node N is obtained as follows. Let
+   V[0], V[1], ... be the content-bearing PFS_NODE records of N ordered by
+   descending session_seq (V[0] is the newest). Define materialize(k):
+
+      record V[k].content_kind:
+        EMPTY    -> the empty byte string
+        DIRECT   -> read the RAW partition V[k].content_uid; verify its PCF
+                    data_hash; the bytes are the content; verify that
+                    hash(bytes) == V[k].full_hash and len == full_size
+        INHERIT  -> materialize(k+1)
+        DELTA    -> base  = materialize(k+1)
+                    verify hash(base) == V[k].base_full_hash and
+                       len(base) == V[k].base_full_size
+                    read the RAW partition V[k].patch_uid; verify its PCF
+                       data_hash
+                    bytes = apply(patch_algo_id, base, patch)
+                    verify hash(bytes) == V[k].full_hash and
+                       len == full_size
+                    the bytes are the content
+
+   The file's current content is materialize(0). "Content-bearing" excludes
+   tombstone records (which carry no content) but, for the purpose of
+   resolving INHERIT and DELTA bases, INHERIT records are traversed (they
+   forward to the previous version). A Reader MUST verify every full_hash and
+   base_full_hash it relies upon; base_full_hash makes the chosen base
+   unambiguous and detects an inconsistent or corrupted history.
+
+   If reconstruction reaches k beyond the last available version (no base
+   exists for a DELTA or INHERIT), the history is malformed.
+
+9.4  Delta Depth and Re-Baselining
+
+   The number of consecutive DELTA/INHERIT records traversed before reaching
+   an EMPTY or DIRECT record is the delta depth. To bound reconstruction cost
+   and corruption blast radius, a Writer SHOULD re-baseline a file -- write a
+   fresh DIRECT version instead of another DELTA -- before the delta depth
+   would exceed 16 (PFS_RECOMMENDED_MAX_DELTA_DEPTH). A Writer SHOULD also
+   choose DIRECT whenever the patch would not be smaller than the full new
+   content (i.e., write DELTA only when len(patch) < full_size).
+
+   A Reader MUST support a delta depth of at least 64
+   (PFS_MIN_READER_DELTA_DEPTH). Beyond an implementation-defined limit a
+   Reader MAY refuse to reconstruct, reporting the file as too deeply chained
+   rather than malformed.
+
+
+-------------------------------------------------------------------------------
+10. Filesystem Semantics
+-------------------------------------------------------------------------------
+
+10.1 Node Identity and the Root
+
+   Every node has a 16-byte node_id that is stable for the node's entire
+   lifetime: renaming, moving, modifying, deleting, and re-creating-in-place
+   all reuse the same node_id. node_id values SHOULD be generated as UUIDv7
+   (matching the PCF recommendation for uids) but MAY be any 16-byte value
+   other than the reserved root value.
+
+   The root directory has node_id = 16 zero bytes and parent_id = 16 zero
+   bytes (it is its own parent). The first session SHOULD emit an explicit
+   root PFS_NODE record (kind = directory, empty name). If no root record is
+   ever written, a Reader MUST synthesize an empty live root.
+
+   node_id is unrelated to the PCF uid of the partition carrying the record;
+   the same node will, across sessions, be described by several PFS_NODE
+   partitions, each with a distinct PCF uid but the same node_id.
+
+10.2 Liveness
+
+   For each node_id, its CURRENT record is the PFS_NODE record with the
+   greatest session_seq (newest wins). If two records for the same node_id
+   share a session_seq, the file is malformed (a node MUST appear at most once
+   per session).
+
+   A node is LIVE if and only if:
+
+      (a) its current record exists and does not have TOMBSTONE set, and
+      (b) it is the root, OR its parent (by parent_id) is a LIVE directory.
+
+   This makes directory deletion recursive without per-descendant records:
+   tombstoning a directory makes its whole subtree non-live, because the
+   subtree's ancestor chain no longer reaches the root through live
+   directories. A node whose parent is missing or non-live is "orphaned" and
+   is not part of the tree. Liveness is evaluated by walking parent_id links
+   to the root; a Reader MUST detect and reject cycles in this walk as
+   malformed.
+
+10.3 Names and Collisions
+
+   Within one directory, no two live child nodes may share a name (byte-for-
+   byte, Section 7.2). A Writer MUST NOT create such a collision. If a Reader
+   nonetheless finds two live siblings with the same name, it MUST keep the
+   one whose current record has the greater session_seq and treat the other
+   as hidden; this is a resilience rule, not a license for Writers to produce
+   collisions.
+
+10.4 Mapping of Filesystem Operations
+
+   Each operation is performed by appending, in a session, one new PFS_NODE
+   record (the full new state of the node) plus any RAW partitions its
+   content needs. No earlier record is altered.
+
+      Create file        new node_id; kind=file; parent_id set; content
+                         EMPTY or DIRECT (a RAW full-content partition).
+      Create directory   new node_id; kind=directory; parent_id set.
+      Rename file        same node_id; new name; content INHERIT.
+      Rename directory   same node_id; new name.
+      Move file          same node_id; new parent_id; content INHERIT.
+      Move directory     same node_id; new parent_id.
+      Rename+move        same node_id; new name and new parent_id together
+                         (a record is a full snapshot, so combined moves need
+                         only one record).
+      Modify file        same node_id; content DELTA if a patch against the
+                         previous version is smaller than the new file, else
+                         DIRECT; full_size and full_hash set accordingly.
+      Delete file        same node_id; TOMBSTONE set; no content section.
+      Delete directory   same node_id; TOMBSTONE set. Descendants become
+                         non-live by ancestry (Section 10.2); a Writer MAY
+                         additionally tombstone descendants but is NOT
+                         required to.
+
+   Re-creating a path after deletion MAY reuse the old node_id (resurrecting
+   the node and, for a directory, its still-referenced subtree) or MAY use a
+   fresh node_id (a distinct node). The choice is the Writer's and is
+   observable to readers of history.
+
+
+-------------------------------------------------------------------------------
+11. Reader Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+11.1 Open and detect
+
+      read and verify the 20-byte PCF header (PCF 11.1)
+      head = header.partition_table_offset
+      detection: the head block SHOULD contain exactly one PFS_SESSION entry
+                 whose record_magic == "PFSS"; if so, treat as a PFS-MS file.
+
+11.2 Scan all sessions
+
+      uid_index   = {}            // PCF uid -> entry (for content lookup)
+      sessions    = []            // (session_seq, head_offset, blocks, entries)
+      tbl = head
+      while tbl != 0:
+          // tbl is a session HEAD block (it carries the PFS_SESSION record)
+          read block header at tbl; verify table_hash (PCF 8.4)
+          entries = read partition_count entries; index uids
+          sess = parse the one PFS_SESSION entry (seq, prev_hash, block_count,
+                 member_digest); a HEAD block has exactly one PFS_SESSION
+          blocks = [tbl]
+          member_hashes = []
+          t = block.next_table_offset
+          for j in 1 .. block_count-1:          // walk member blocks
+              read block header at t; verify table_hash
+              MUST contain no PFS_SESSION entry
+              accumulate its entries; index uids; member_hashes.append(t.hash)
+              blocks.append(t); t = block.next_table_offset
+          // optional: verify member_digest over member_hashes (8.2)
+          sessions.append((sess.seq, tbl, blocks, all_entries))
+          tbl = t                                // next (older) session HEAD
+      // optional but RECOMMENDED: verify the inter-session hash chain (8.2):
+      //   each session's prev_session_hash == previous session HEAD's table_hash
+
+11.3 Build the node view
+
+      current = {}                // node_id -> (session_seq, node_record)
+      history = {}                // node_id -> list of node_records (desc seq)
+      for each session in ascending session_seq:
+          for each PFS_NODE entry e:
+              r = parse node record from partition e
+              append r to history[r.node_id]
+              current[r.node_id] = (session.seq, r)   // newest wins
+      sort each history[node_id] by descending session_seq
+
+11.4 Build the tree
+
+      live(n):  memoized; true iff current[n] exists, not tombstoned, and
+                (n == ROOT or (parent is a live directory)); reject cycles
+      tree = { ROOT, with children = live nodes whose live parent == ROOT }
+      recurse; within a directory, enforce unique names (10.3)
+
+11.5 Read a file
+
+      records = history[node_id]      // descending session_seq
+      content = materialize(records, 0)    // Section 9.3
+      return content
+
+
+-------------------------------------------------------------------------------
+12. Writer Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+12.1 Begin a session
+
+      seq = previous_session_seq + 1   (or 1 for the first session)
+      collect the set of node changes to publish (no per-session size limit;
+          large change sets simply use several Table Blocks, Section 6.1)
+
+12.2 Emit content (per changed file)
+
+      compute new bytes; if modifying, fetch previous content P:
+          patch = vcdiff(P, new)
+          if len(patch) < len(new): emit RAW(patch) -> DELTA, set base hashes
+          else:                      emit RAW(new)   -> DIRECT
+      else (new/empty): emit RAW(new) -> DIRECT, or EMPTY for zero bytes
+      enforce re-baseline before depth 16 (Section 9.4)
+
+12.3 Emit node records
+
+      for each changed node: build the full PFS_NODE record (Section 7),
+          assign a fresh PCF uid, reference content_uid/patch_uid as needed
+
+12.4 Emit the blocks and commit
+
+      write all partition data; compute each data_hash
+      partition this session's entries into blocks of <= 255 entries each;
+          the PFS_SESSION partition goes into the HEAD block
+      write the MEMBER blocks first (chained), compute their table_hashes
+      build PFS_SESSION { seq, timestamp, block_count, member_digest =
+          H(member table_hashes), prev_session_hash = previous session HEAD
+          block's table_hash (or zero for the first session) }
+      write the HEAD block last (next_table_offset -> first member block, or
+          previous session HEAD block if no members); compute its table_hash
+      follow the commit protocol S1..S7 (Section 6.2)
+
+
+-------------------------------------------------------------------------------
+13. Conformance and Validation
+-------------------------------------------------------------------------------
+
+   A conforming PFS-MS Reader MUST:
+
+      R1.  Be a conforming PCF Reader (PCF Section 12, C1..C8).
+      R2.  Locate the head via the PCF header and traverse the backward-
+           linked session chain to the tail (next_table_offset == 0).
+      R3.  Group the chain's blocks into sessions: a HEAD block holds exactly
+           one PFS_SESSION partition with valid record_magic and declares
+           block_count; the following (block_count - 1) blocks are MEMBER
+           blocks and MUST contain no PFS_SESSION partition. Require strictly
+           decreasing session_seq from head to tail (head highest); reject
+           otherwise.
+      R4.  Treat as malformed any PFS_NODE record with a bad record_magic,
+           an unknown kind, reserved bits set in flags, an out-of-range
+           name_len, a name containing 0x00 or '/', or a name of "." or "..".
+      R5.  Resolve node state by newest session_seq (Section 10.2) and reject
+           a file where one node_id appears twice in the same session.
+      R6.  Evaluate liveness by ancestor walk to the root and reject cycles.
+      R7.  Verify full_hash (and base_full_hash for DELTA) for any file
+           content it reconstructs, and verify the PCF data_hash of every RAW
+           partition it reads (unless the algorithm id is 0).
+      R8.  When asked to verify integrity, verify the inter-session hash
+           chain (Section 8.2).
+
+   A conforming PFS-MS Writer MUST:
+
+      W1.  Be a conforming PCF Writer (PCF Section 12, W1..W5).
+      W2.  Never modify a committed byte except the 8-byte
+           header.partition_table_offset at commit (Section 4.3).
+      W3.  Publish each session as one or more Table Blocks: exactly one HEAD
+           block carrying the single PFS_SESSION partition with the correct
+           session_seq, block_count, member_blocks_digest, and
+           prev_session_hash (Section 8.2); the last block's next_table_offset
+           is the previous session's HEAD block offset (or 0). MEMBER blocks
+           carry no PFS_SESSION partition.
+      W3b. Set member_blocks_digest before computing the HEAD block table_hash
+           so the HEAD block commits to every MEMBER block (Section 8.2).
+      W4.  Write each changed node as one full PFS_NODE record per session and
+           never write the same node_id twice in one session.
+      W5.  Maintain unique names among live siblings and a valid, acyclic
+           parent hierarchy.
+      W6.  Choose DELTA only when the patch is smaller than the full content,
+           and re-baseline before the recommended maximum delta depth.
+      W7.  Follow the commit protocol S1..S7 (Section 6.2), including the
+           flush before publishing the new head.
+
+   As in PCF, the format TRUSTS the Writer for physical layout. A PFS-MS
+   Reader is NOT required to validate that partition regions do not overlap,
+   that regions are gap-free, or that abandoned (uncommitted) trailing bytes
+   are absent; such a file is not, by those facts alone, non-conforming.
+
+
+-------------------------------------------------------------------------------
+14. Versioning
+-------------------------------------------------------------------------------
+
+   PFS-MS carries its own profile version in every PFS_SESSION record
+   (profile_version_major, profile_version_minor), independent of the PCF
+   container version (which remains 1.0).
+
+      A profile MAJOR change denotes an incompatible change to a record
+      layout or to reconstruction/liveness semantics. A Reader MUST reject a
+      session whose profile_version_major it does not implement.
+
+      A profile MINOR change denotes a backward-compatible addition that does
+      not alter any existing record byte layout -- for example, registering a
+      new delta algorithm id (Section 9.2), defining a previously reserved
+      flag bit, or assigning meaning to the reserved u16. A Reader
+      implementing major M MUST read sessions with the same M and an equal or
+      lower minor, and SHOULD accept a higher minor, ignoring features it does
+      not understand.
+
+   Different sessions in one file MAY declare different minor versions (older
+   sessions were written by older Writers); a Reader processes each on its own
+   declared version. This document defines profile version 1.0.
+
+
+-------------------------------------------------------------------------------
+15. Future Considerations (Informative)
+-------------------------------------------------------------------------------
+
+   Cryptographic signatures. Because the head pointer anchors a hash chain
+   that commits to every session, a signature over the head block's
+   table_hash signs the entire history. Following PCF Section 13, such a
+   signature could be carried in a dedicated partition rather than in any
+   record, leaving these layouts unchanged. Choosing a cryptographic
+   table_hash and full_hash algorithm (SHA-256, SHA-512, BLAKE3) is the basis
+   for this; CRC/MD5/SHA-1 are unsuitable.
+
+   Additional delta algorithms. xdelta (id 2) and others can be added by a
+   profile minor bump without layout change (Section 9.2).
+
+   Extended attributes and symlinks. A future minor version could define a
+   reserved flag bit or a new kind value, or a reserved-type sidecar
+   partition, to carry xattrs or symbolic-link targets, without disturbing
+   existing readers of files and directories.
+
+   Snapshots and history queries. Since every session is preserved, a Reader
+   can reconstruct the tree "as of" any session_seq by ignoring records with a
+   higher seq -- a natural time-travel facility that needs no extra storage.
+
+   Finalization. A finalized PFS-MS file MAY be compacted with the PCF
+   compaction operation (PCF Section 11.5), which is a full rewrite into a new
+   file; this reclaims superseded versions and abandoned tails at the cost of
+   discarding history.
+
+
+-------------------------------------------------------------------------------
+16. Assumptions and Design Decisions (Informative)
+-------------------------------------------------------------------------------
+
+   B1.  The profile changes nothing in PCF. It uses two application type
+        values (0xAAAA0001, 0xAAAA0002) and the PCF RAW type, all permitted by
+        PCF Section 7.
+
+   B2.  Append-only is "soft": only the 8-byte header pointer is rewritten, as
+        the multi-session table-of-contents superblock. Everything else is
+        immutable once committed.
+
+   B3.  The session chain is linked backward (newest -> oldest) via PCF's
+        already-flexible next_table_offset, so committing a session needs no
+        edit to any earlier block and no cascading re-hash.
+
+   B4.  Sessions carry DELTAS (changed nodes only), resolved by newest-
+        session-wins, matching the multi-session-disc mental model.
+
+   B5.  Node identity is a stable 16-byte node_id, separate from PCF uid, so
+        rename/move/modify/delete/resurrect all track the same node.
+
+   B6.  A node record is a full declarative snapshot of one node's state, so a
+        single record expresses any combination of rename, move, and content
+        change.
+
+   B7.  Directory deletion is recursive by ancestry, not by per-descendant
+        tombstones, keeping delete O(1) in records.
+
+   B8.  File content is DIRECT, DELTA, INHERIT, or EMPTY. DELTA defaults to
+        VCDIFF and carries a base hash so the base is verifiable and
+        unambiguous; depth is bounded by re-baselining.
+
+   B9.  A session is one or more PCF Table Blocks. A single block holds <= 255
+        entries (PCF u8 partition_count); a larger session simply spans more
+        blocks, so a session is unbounded in size. The HEAD block carries the
+        PFS_SESSION record and, via member_blocks_digest, commits to all of
+        the session's MEMBER blocks; block_count delimits the session during a
+        read.
+
+   B10. Integrity layers cleanly: PCF data_hash protects each stored partition;
+        full_hash protects reconstructed file content; table_hash plus
+        prev_session_hash chain protects session history; the head pointer
+        anchors the chain.
+
+   B11. The root node_id and the PFS-MS all-zero node_id are reserved, echoing
+        PCF's NIL-uid / type-0 guards, to resist accidental zero-filled data
+        being mistaken for a node.
+
+
+-------------------------------------------------------------------------------
+17. Test Vectors
+-------------------------------------------------------------------------------
+
+   The following narrative example exercises the model end to end. Exact
+   offsets and hash values are left as TODO (to be produced by a reference
+   implementation and pinned as a byte-exact vector, mirroring PCF Section 15).
+
+   Session 1 (session_seq = 1):
+      RAW r1  : full bytes of "hello.txt" v1 ("Hello\n")
+      PFS_NODE: root (kind=dir, node_id=0, name="")
+      PFS_NODE: dir  "docs" (kind=dir, parent=root)
+      PFS_NODE: file "hello.txt" (kind=file, parent=docs,
+                content DIRECT -> r1, full_size=6)
+      PFS_SESSION: seq=1, prev_session_hash = zero, prev algo id = 0,
+                block_count = 1, member_blocks_digest = zero (algo 0)
+      HEAD block T1: 5 entries, next_table_offset = 0, table_hash = H1
+      Commit: header.partition_table_offset = offset(T1)
+
+   Session 2 (session_seq = 2): modify hello.txt to "Hello, world\n"
+      RAW r2  : VCDIFF patch from "Hello\n" to "Hello, world\n"
+                (emitted only if len(patch) < len(new); else a DIRECT RAW)
+      PFS_NODE: file "hello.txt" (same node_id, content DELTA ->
+                patch_uid = r2, base_full_hash = hash("Hello\n"),
+                full_hash = hash("Hello, world\n"))
+      PFS_SESSION: seq=2, prev_session_hash = H1, prev algo id = T1's algo,
+                block_count = 1, member_blocks_digest = zero (algo 0)
+      HEAD block T2: 3 entries, next_table_offset = offset(T1), table_hash = H2
+      Commit: header.partition_table_offset = offset(T2)
+
+   Session 3 (session_seq = 3): rename "docs" to "documents", delete hello.txt
+      PFS_NODE: dir  "documents" (same node_id as "docs", new name)
+      PFS_NODE: file "hello.txt" (same node_id, TOMBSTONE set, no content)
+      PFS_SESSION: seq=3, prev_session_hash = H2, block_count = 1
+      HEAD block T3: 3 entries, next_table_offset = offset(T2), table_hash = H3
+      Commit: header.partition_table_offset = offset(T3)
+
+   Expected reconstruction at the head (after Session 3):
+      /                         (root)
+      /documents                (directory; renamed from docs)
+      hello.txt is NOT live     (tombstoned in Session 3)
+      Reading hello.txt "as of session 2" yields "Hello, world\n"
+      (history-query facility, Section 15).
+
+   Multi-block session (illustration): a session adding 600 files emits, say,
+   three blocks -- one HEAD block (with the PFS_SESSION record + up to 254
+   entries) and two MEMBER blocks (up to 255 entries each). block_count = 3;
+   member_blocks_digest = H(M1.table_hash || M2.table_hash), where M1, M2 are
+   the member blocks in chain order. Chain: head pointer -> HEAD -> M1 -> M2
+   -> previous session HEAD (or 0).
+
+   A reference implementation MUST also publish: the exact byte layout of one
+   PFS_NODE record (DIRECT and DELTA variants), one PFS_SESSION record, and
+   the resulting data_hash/table_hash/full_hash/member_blocks_digest values,
+   so independent implementations can verify byte-exact conformance.
+
+
+-------------------------------------------------------------------------------
+Appendix A. Field Layout Summary
+-------------------------------------------------------------------------------
+
+   PFS_NODE record (PCF type 0xAAAA0001) -- partition data
+      0    4  bytes  record_magic = "PFSN" (50 46 53 4E)
+      4    1  u8     record_version = 1
+      5    1  u8     kind                       (1=file, 2=dir)
+      6    2  u16    flags                      (bit0 = TOMBSTONE)
+      8   16  bytes  node_id                    (all-zero = root only)
+     24   16  bytes  parent_id
+     40    8  u64    mtime_unix_ms              (0 = unset)
+     48    4  u32    mode                       (0 = unset)
+     52    2  u16    name_len                   (0..1024)
+     54   N  bytes   name                       (UTF-8, no 0x00 or '/')
+     54+N  ...       content_section            (files, non-tombstone only)
+
+   content_section
+      +0    1  u8     content_kind  (0=EMPTY, 1=DIRECT, 2=DELTA, 3=INHERIT)
+      DIRECT (kind=1), total 90 bytes:
+        +1   16 bytes content_uid
+        +17   8 u64   full_size
+        +25   1 u8    full_hash_algo_id
+        +26  64 bytes full_hash
+      DELTA (kind=2), total 164 bytes:
+        +1    1 u8    patch_algo_id              (1 = VCDIFF)
+        +2   16 bytes patch_uid
+        +18   8 u64   full_size
+        +26   1 u8    full_hash_algo_id
+        +27  64 bytes full_hash
+        +91   8 u64   base_full_size
+        +99   1 u8    base_full_hash_algo_id
+        +100 64 bytes base_full_hash
+      EMPTY (kind=0) / INHERIT (kind=3): no further bytes
+
+   PFS_SESSION record (PCF type 0xAAAA0002) -- partition data, in HEAD block
+      0    4  bytes  record_magic = "PFSS" (50 46 53 53)
+      4    1  u8     profile_version_major = 1
+      5    1  u8     profile_version_minor = 0
+      6    2  u16    reserved (= 0)
+      8    8  u64    session_seq                (1-based, strictly increasing)
+     16    8  u64    timestamp_unix_ms          (0 = unset)
+     24    1  u8     prev_session_hash_algo_id  (0 if first session)
+     25   64  bytes  prev_session_hash          (prev session HEAD table_hash)
+     89    4  u32    block_count                (Table Blocks in session, >= 1)
+     93    1  u8     member_digest_algo_id      (0 if block_count == 1)
+     94   64  bytes  member_blocks_digest       (over member block table_hashes)
+    158    2  u16    change_count               (informational)
+    160    2  u16    writer_len
+    162    M  bytes  writer                     (UTF-8, optional)
+
+   Container facilities used unchanged from PCF
+      File Header (20 B)        magic, version 1.0, partition_table_offset = head
+      Table Block Header (74 B) partition_count, next_table_offset (-> next
+                                block of same session, or previous session
+                                HEAD block, or 0), table_hash
+      Partition Entry (141 B)   type, uid, label, start_offset, max_length,
+                                used_bytes, data_hash
+
+
+-------------------------------------------------------------------------------
+Appendix B. Type and Constant Registry
+-------------------------------------------------------------------------------
+
+   PCF partition types used by PFS-MS
+      0xAAAA0001  PFS_NODE
+      0xAAAA0002  PFS_SESSION
+      0xFFFFFFFF  RAW content (full bytes or delta patch)
+
+   Record magics
+      "PFSN" = 0x50 0x46 0x53 0x4E   (PFS_NODE)
+      "PFSS" = 0x50 0x46 0x53 0x53   (PFS_SESSION)
+
+   Reserved node_id
+      all-zero (16 x 0x00) = ROOT
+
+   Node kinds       1 = file, 2 = directory
+   Node flags       bit 0 = TOMBSTONE (others reserved, MUST be 0)
+   content_kind     0 = EMPTY, 1 = DIRECT, 2 = DELTA, 3 = INHERIT
+   patch_algo_id    1 = VCDIFF (RFC 3284, required), 2 = xdelta (reserved)
+
+   Limits
+      PFS_MAX_NAME                    1024 bytes (UTF-8)
+      Entries per Table Block         <= 255 (PCF u8 partition_count)
+      Blocks per session              >= 1, otherwise unbounded (block_count)
+      Partitions per session          unbounded (spans multiple blocks)
+      PFS_RECOMMENDED_MAX_DELTA_DEPTH 16 (writer re-baseline threshold)
+      PFS_MIN_READER_DELTA_DEPTH      64 (reader MUST support at least this)
+
+   Profile version  major 1, minor 0   (PCF container version: 1.0)
+
+===============================================================================
+                       End of PFS-MS Specification v1.0
+===============================================================================
