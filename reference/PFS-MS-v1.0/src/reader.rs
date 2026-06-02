@@ -209,7 +209,7 @@ pub fn build_node_view(scan: &Scan, max_seq: Option<u64>) -> NodeView {
         }
     }
     for v in view.history.values_mut() {
-        v.sort_by(|a, b| b.0.cmp(&a.0)); // descending seq
+        v.sort_by_key(|b| std::cmp::Reverse(b.0)); // descending seq
     }
     view
 }
