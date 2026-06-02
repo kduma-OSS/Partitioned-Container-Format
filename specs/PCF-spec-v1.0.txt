@@ -392,7 +392,7 @@ Table of Contents
        0   none                 0 B  none             No verification.
        1   CRC-32                4 B  non-crypto       CRC-32/ISO-HDLC.
        2   CRC-32C               4 B  non-crypto       Castagnoli; HW support.
-       3   CRC-64                8 B  non-crypto       Fast checksum.
+       3   CRC-64                8 B  non-crypto       CRC-64/XZ.
        4   MD5                  16 B  broken-crypto    Checksum use only.
        5   SHA-1                20 B  broken-crypto    Checksum use only.
       16   SHA-256              32 B  cryptographic    DEFAULT.
@@ -413,6 +413,14 @@ Table of Contents
 
       CRC-32C (ID 2):  width=32, reflected poly 0x82F63B78, init=0xFFFFFFFF,
                        refin=true, refout=true, xorout=0xFFFFFFFF.
+
+      CRC-64  (ID 3):  CRC-64/XZ.
+                       width=64, reflected poly 0x42F0E1EBA9EA3693,
+                       init=0xFFFFFFFFFFFFFFFF, refin=true, refout=true,
+                       xorout=0xFFFFFFFFFFFFFFFF.
+                       (This is the CRC-64 used by xz/liblzma and by .NET
+                       System.IO.Hashing.Crc64. Check value for the ASCII
+                       input "123456789" is 0x995DC9BBDF1939FA.)
 
    SHA-256 (ID 16) is the DEFAULT and RECOMMENDED algorithm. Algorithms with
    ID 1..5 detect accidental corruption only and MUST NOT be relied upon for
