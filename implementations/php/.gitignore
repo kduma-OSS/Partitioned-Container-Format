@@ -1,0 +1,19 @@
+# --- Composer ---
+/vendor/
+composer.lock
+
+# --- PHPUnit ---
+/.phpunit.cache/
+.phpunit.result.cache
+
+# --- Generated artifacts ---
+*.bin
+
+# --- Editors ---
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- macOS ---
+.DS_Store
