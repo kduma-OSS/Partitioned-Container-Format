@@ -84,6 +84,7 @@ pub struct FsWriter<S: Read + Write + Seek> {
     next_seq: u64,
     eof: u64,
     writer_id: Vec<u8>,
+    compress: bool,
 }
 
 impl<S: Read + Write + Seek> FsWriter<S> {
@@ -108,6 +109,7 @@ impl<S: Read + Write + Seek> FsWriter<S> {
             next_seq: 1,
             eof: HEADER_SIZE,
             writer_id: b"pfs-ms-ref/1.0".to_vec(),
+            compress: true,
         })
     }
 
@@ -173,12 +175,20 @@ impl<S: Read + Write + Seek> FsWriter<S> {
             next_seq,
             eof,
             writer_id: b"pfs-ms-ref/1.0".to_vec(),
+            compress: true,
         })
     }
 
     /// Set the free-form writer identifier recorded in each session.
     pub fn set_writer_id(&mut self, id: &[u8]) {
         self.writer_id = id.to_vec();
+    }
+
+    /// Enable or disable content compression for subsequent writes. When
+    /// disabled, content and patches are always stored verbatim
+    /// (compression_algo_id = 0). Compression is enabled by default.
+    pub fn set_compression(&mut self, enabled: bool) {
+        self.compress = enabled;
     }
 
     /// Consume the writer and return the backing store.
@@ -489,14 +499,30 @@ impl<S: Read + Write + Seek> FsWriter<S> {
         self.commit(parts, new_id(), 1, now_ms(), &wid)
     }
 
+    /// DEFLATE `bytes` and return the smaller of (compressed, verbatim) along
+    /// with the `compression_algo_id` describing the chosen form (Section 9.5).
+    /// Returns the verbatim bytes when compression is disabled or not smaller.
+    fn maybe_compress(&self, bytes: &[u8]) -> (u8, Vec<u8>) {
+        if self.compress {
+            if let Ok(packed) = crate::compress::compress_deflate(bytes) {
+                if packed.len() < bytes.len() {
+                    return (COMPRESS_DEFLATE, packed);
+                }
+            }
+        }
+        (COMPRESS_NONE, bytes.to_vec())
+    }
+
     fn build_new_content(&self, parts: &mut Vec<Partition>, content: &[u8]) -> ContentSection {
         let algo = self.hash_algo;
         if content.is_empty() {
             return ContentSection::Empty;
         }
         let content_uid = new_id();
-        parts.push(Partition::raw(content_uid, "content", content.to_vec()));
+        let (compression_algo, stored) = self.maybe_compress(content);
+        parts.push(Partition::raw(content_uid, "content", stored));
         ContentSection::Direct {
+            compression_algo,
             content_uid,
             full_size: content.len() as u64,
             full_hash_algo: algo,
@@ -523,9 +549,11 @@ impl<S: Read + Write + Seek> FsWriter<S> {
                 let depth = current_delta_depth(view, node_id);
                 if patch.len() < content.len() && depth < RECOMMENDED_MAX_DELTA_DEPTH {
                     let patch_uid = new_id();
-                    parts.push(Partition::raw(patch_uid, "patch", patch));
+                    let (compression_algo, stored) = self.maybe_compress(&patch);
+                    parts.push(Partition::raw(patch_uid, "patch", stored));
                     return ContentSection::Delta {
                         patch_algo: PATCH_VCDIFF,
+                        compression_algo,
                         patch_uid,
                         full_size: content.len() as u64,
                         full_hash_algo: algo,

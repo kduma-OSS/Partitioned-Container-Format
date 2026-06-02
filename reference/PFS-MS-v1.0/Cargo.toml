@@ -27,3 +27,8 @@ oxidelta = { version = "=0.1.4", default-features = false }
 
 # 16-byte node_id / PCF uid generation (UUIDv7 recommended by both specs).
 uuid = { version = "1", features = ["v7"] }
+
+# DEFLATE (RFC 1951) is the required content-compression algorithm
+# (compression_algo_id = 1). `flate2`'s pure-Rust miniz_oxide backend keeps the
+# crate free of C dependencies and fully portable.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

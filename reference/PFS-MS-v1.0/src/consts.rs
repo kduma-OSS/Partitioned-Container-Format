@@ -45,6 +45,12 @@ pub const CONTENT_INHERIT: u8 = 3;
 /// `patch_algo_id`: VCDIFF (RFC 3284), the required default.
 pub const PATCH_VCDIFF: u8 = 1;
 
+/// `compression_algo_id`: stored verbatim (no compression).
+pub const COMPRESS_NONE: u8 = 0;
+/// `compression_algo_id`: DEFLATE (RFC 1951), the required default.
+/// Identifiers 2 (zstd) and 3 (brotli) are reserved for a future revision.
+pub const COMPRESS_DEFLATE: u8 = 1;
+
 /// The reserved root `node_id` (16 zero bytes).
 pub const ROOT_NODE_ID: [u8; 16] = [0u8; 16];
 
@@ -53,10 +59,12 @@ pub const PFS_MAX_NAME: usize = 1024;
 
 /// Fixed prefix length of a Node Record, in bytes (Section 7.1).
 pub const NODE_PREFIX_LEN: usize = 54;
-/// Length of a DIRECT content section, in bytes (Section 7.3).
-pub const DIRECT_SECTION_LEN: usize = 90;
-/// Length of a DELTA content section, in bytes (Section 7.3).
-pub const DELTA_SECTION_LEN: usize = 164;
+/// Length of a DIRECT content section, in bytes (Section 7.3). Includes the
+/// `compression_algo_id` byte.
+pub const DIRECT_SECTION_LEN: usize = 91;
+/// Length of a DELTA content section, in bytes (Section 7.3). Includes the
+/// `compression_algo_id` byte.
+pub const DELTA_SECTION_LEN: usize = 165;
 /// Fixed prefix length of a Session Record (before the writer field).
 pub const SESSION_PREFIX_LEN: usize = 162;
 

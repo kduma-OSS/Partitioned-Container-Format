@@ -73,6 +73,24 @@ fn delta_and_direct_reconstruct_correctly() {
 }
 
 #[test]
+fn large_compressible_file_roundtrips() {
+    // A large, highly compressible payload exercises the DEFLATE content path
+    // end to end (write -> store compressed -> read -> decompress).
+    let payload = b"0123456789abcdef".repeat(4096); // 64 KiB, very compressible
+    let mut w = FsWriter::mkfs(Cursor::new(Vec::new()), HashAlgo::Sha256).unwrap();
+    w.put_file("data.bin", &payload).unwrap();
+    // Modify it; the new version is also compressed (DIRECT or DELTA).
+    let mut payload2 = payload.clone();
+    payload2.extend_from_slice(b"tail");
+    w.put_file("data.bin", &payload2).unwrap();
+    let bytes = w.into_storage().into_inner();
+
+    let mut r = FsReader::open(Cursor::new(bytes)).unwrap();
+    r.verify().unwrap();
+    assert_eq!(r.read_path("data.bin").unwrap(), payload2);
+}
+
+#[test]
 fn move_file_preserves_bytes_via_inherit() {
     let mut w = FsWriter::mkfs(Cursor::new(Vec::new()), HashAlgo::Sha256).unwrap();
     w.mkdir("a").unwrap();

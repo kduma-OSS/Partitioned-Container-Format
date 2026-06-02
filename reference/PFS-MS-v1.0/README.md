@@ -18,7 +18,8 @@ in-place header-pointer rewrite that PCF already permits.
 ## Model
 
 * File **content** lives in PCF **RAW** partitions (`0xFFFFFFFF`): either the
-  full bytes (DIRECT) or a VCDIFF patch (DELTA) against the previous version.
+  full bytes (DIRECT) or a VCDIFF patch (DELTA) against the previous version,
+  in either case **optionally compressed** (see below).
 * **Node** metadata lives in **PFS_NODE** partitions (`0xAAAA0001`): one
   declarative snapshot of a file/directory per session it changed in.
 * **Session** metadata lives in **PFS_SESSION** partitions (`0xAAAA0002`): one
@@ -43,6 +44,29 @@ header.partition_table_offset --> HEAD(newest) --> ... --> HEAD(oldest) --> 0
 | `0xAAAA0002` | PFS_SESSION | one Session Record (magic `"PFSS"`)    |
 | `0xFFFFFFFF` | RAW         | file content: full bytes or a patch    |
 
+## Compression (Section 9.5)
+
+The bytes stored in a DIRECT content partition (the full content) or a DELTA
+patch partition (the patch) may be compressed. The content section carries a
+`compression_algo_id`; DIRECT is 91 bytes and DELTA is 165 bytes (one byte more
+than the uncompressed-only draft). The writer DEFLATEs the bytes and stores the
+compressed form only when it is smaller, else stores them verbatim.
+
+| id | algorithm | notes |
+|----|-----------|-------|
+| 0  | none      | stored verbatim (required) |
+| 1  | DEFLATE   | RFC 1951, the required default (pure-Rust `flate2`/miniz_oxide) |
+| 2  | zstd      | reserved |
+| 3  | brotli    | reserved |
+
+Integrity layers cleanly: the PCF `data_hash` protects the **stored
+(compressed)** bytes; `full_hash`/`full_size` protect the **decompressed**
+content. An unknown `compression_algo_id` makes a file *unreadable* but not the
+container *malformed* (the same rule as an unknown `patch_algo_id`).
+
+> This revision changes the v1.0 content-section layout and is intentionally
+> **not** compatible with files written by earlier drafts.
+
 ## Library usage
 
 ```rust
@@ -66,8 +90,9 @@ assert_eq!(r.read_path_as_of("docs/hello.txt", Some(2))?, b"Hello\n");
 
 `FsReader<S>`/`FsWriter<S>` work with any `Read + Write + Seek` backing store
 (`std::fs::File`, `std::io::Cursor<Vec<u8>>`, …). VCDIFF (RFC 3284) deltas are
-provided by the pure-Rust [`oxidelta`](https://crates.io/crates/oxidelta) crate;
-node/uid identities use UUIDv7.
+provided by the pure-Rust [`oxidelta`](https://crates.io/crates/oxidelta) crate
+and DEFLATE compression by [`flate2`](https://crates.io/crates/flate2)
+(miniz_oxide backend); node/uid identities use UUIDv7.
 
 ## CLI
 
@@ -78,6 +103,7 @@ cargo run --bin pfs -- mkfs   fs.pfs
 cargo run --bin pfs -- mkdir  fs.pfs docs
 echo hi | cargo run --bin pfs -- put fs.pfs docs/hello.txt -
 cargo run --bin pfs -- put    fs.pfs docs/hello.txt ./bigger.bin
+cargo run --bin pfs -- put    fs.pfs docs/raw.bin ./data.bin --store  # no compression
 cargo run --bin pfs -- mv     fs.pfs docs documents
 cargo run --bin pfs -- rm     fs.pfs documents/hello.txt
 cargo run --bin pfs -- ls     fs.pfs
@@ -96,6 +122,7 @@ reference/PFS-MS-v1.0/
 │   ├── node.rs      # PFS_NODE record + content sections (Section 7)
 │   ├── session.rs   # PFS_SESSION record + hash-chain helpers (Section 8)
 │   ├── delta.rs     # VCDIFF wrapper (Section 9.2)
+│   ├── compress.rs  # DEFLATE wrapper + registry (Section 9.5)
 │   ├── writer.rs    # append-only session writer (Sections 4, 6, 12)
 │   ├── reader.rs    # backward-chain scan + node view (Sections 8, 10, 11)
 │   ├── tree.rs      # liveness, tree, reconstruction (Sections 9.3, 10)

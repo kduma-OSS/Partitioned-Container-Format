@@ -16,20 +16,24 @@ pub enum ContentSection {
     Empty,
     /// `content_kind = 1`: full bytes in one RAW partition.
     Direct {
-        /// PCF uid of the RAW partition holding the full content.
+        /// Compression of the stored RAW bytes (0 = none, 1 = DEFLATE).
+        compression_algo: u8,
+        /// PCF uid of the RAW partition holding the (possibly compressed) content.
         content_uid: [u8; 16],
-        /// Length of the content.
+        /// Length of the reconstructed (decompressed) content.
         full_size: u64,
         /// Hash algorithm of `full_hash`.
         full_hash_algo: HashAlgo,
-        /// Hash of the full content.
+        /// Hash of the full (decompressed) content.
         full_hash: [u8; HASH_FIELD_SIZE],
     },
     /// `content_kind = 2`: a patch against the previous content-bearing version.
     Delta {
         /// Patch algorithm (1 = VCDIFF).
         patch_algo: u8,
-        /// PCF uid of the RAW partition holding the patch.
+        /// Compression of the stored RAW patch bytes (0 = none, 1 = DEFLATE).
+        compression_algo: u8,
+        /// PCF uid of the RAW partition holding the (possibly compressed) patch.
         patch_uid: [u8; 16],
         /// Length of the reconstructed content.
         full_size: u64,
@@ -131,12 +135,14 @@ impl NodeRecord {
                 ContentSection::Empty => b.push(CONTENT_EMPTY),
                 ContentSection::Inherit => b.push(CONTENT_INHERIT),
                 ContentSection::Direct {
+                    compression_algo,
                     content_uid,
                     full_size,
                     full_hash_algo,
                     full_hash,
                 } => {
                     b.push(CONTENT_DIRECT);
+                    b.push(*compression_algo);
                     b.extend_from_slice(content_uid);
                     b.extend_from_slice(&full_size.to_le_bytes());
                     b.push(full_hash_algo.id());
@@ -144,6 +150,7 @@ impl NodeRecord {
                 }
                 ContentSection::Delta {
                     patch_algo,
+                    compression_algo,
                     patch_uid,
                     full_size,
                     full_hash_algo,
@@ -154,6 +161,7 @@ impl NodeRecord {
                 } => {
                     b.push(CONTENT_DELTA);
                     b.push(*patch_algo);
+                    b.push(*compression_algo);
                     b.extend_from_slice(patch_uid);
                     b.extend_from_slice(&full_size.to_le_bytes());
                     b.push(full_hash_algo.id());
@@ -251,13 +259,15 @@ impl NodeRecord {
                 if rest.len() != DIRECT_SECTION_LEN {
                     return Err(Error::MalformedNode("DIRECT section wrong length"));
                 }
+                let compression_algo = rest[1];
                 let mut content_uid = [0u8; 16];
-                content_uid.copy_from_slice(&rest[1..17]);
-                let full_size = rd_u64(&rest[17..25]);
-                let full_hash_algo = HashAlgo::from_id(rest[25])?;
+                content_uid.copy_from_slice(&rest[2..18]);
+                let full_size = rd_u64(&rest[18..26]);
+                let full_hash_algo = HashAlgo::from_id(rest[26])?;
                 let mut full_hash = [0u8; HASH_FIELD_SIZE];
-                full_hash.copy_from_slice(&rest[26..90]);
+                full_hash.copy_from_slice(&rest[27..91]);
                 Ok(ContentSection::Direct {
+                    compression_algo,
                     content_uid,
                     full_size,
                     full_hash_algo,
@@ -269,18 +279,20 @@ impl NodeRecord {
                     return Err(Error::MalformedNode("DELTA section wrong length"));
                 }
                 let patch_algo = rest[1];
+                let compression_algo = rest[2];
                 let mut patch_uid = [0u8; 16];
-                patch_uid.copy_from_slice(&rest[2..18]);
-                let full_size = rd_u64(&rest[18..26]);
-                let full_hash_algo = HashAlgo::from_id(rest[26])?;
+                patch_uid.copy_from_slice(&rest[3..19]);
+                let full_size = rd_u64(&rest[19..27]);
+                let full_hash_algo = HashAlgo::from_id(rest[27])?;
                 let mut full_hash = [0u8; HASH_FIELD_SIZE];
-                full_hash.copy_from_slice(&rest[27..91]);
-                let base_full_size = rd_u64(&rest[91..99]);
-                let base_full_hash_algo = HashAlgo::from_id(rest[99])?;
+                full_hash.copy_from_slice(&rest[28..92]);
+                let base_full_size = rd_u64(&rest[92..100]);
+                let base_full_hash_algo = HashAlgo::from_id(rest[100])?;
                 let mut base_full_hash = [0u8; HASH_FIELD_SIZE];
-                base_full_hash.copy_from_slice(&rest[100..164]);
+                base_full_hash.copy_from_slice(&rest[101..165]);
                 Ok(ContentSection::Delta {
                     patch_algo,
+                    compression_algo,
                     patch_uid,
                     full_size,
                     full_hash_algo,
@@ -331,6 +343,7 @@ mod tests {
             mode: 0,
             name: b"hello.txt".to_vec(),
             content: Some(ContentSection::Direct {
+                compression_algo: COMPRESS_DEFLATE,
                 content_uid: [3u8; 16],
                 full_size: 6,
                 full_hash_algo: HashAlgo::Sha256,
@@ -354,6 +367,7 @@ mod tests {
             name: b"hello.txt".to_vec(),
             content: Some(ContentSection::Delta {
                 patch_algo: PATCH_VCDIFF,
+                compression_algo: COMPRESS_NONE,
                 patch_uid: [4u8; 16],
                 full_size: 13,
                 full_hash_algo: HashAlgo::Sha256,

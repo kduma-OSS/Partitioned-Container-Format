@@ -49,6 +49,11 @@ pub enum Error {
     DeltaTooDeep,
     /// VCDIFF encode/decode failed.
     Vcdiff(String),
+    /// Content used an unimplemented compression_algo_id; the affected file is
+    /// unreadable but the container is not malformed on that basis (Section 9.4).
+    UnsupportedCompressionAlgo(u8),
+    /// DEFLATE compression/decompression failed.
+    Compression(String),
 
     /// A requested path did not resolve to a live node.
     NotFound,
@@ -77,6 +82,10 @@ impl fmt::Display for Error {
             Error::UnsupportedPatchAlgo(id) => write!(f, "unsupported patch_algo_id {id}"),
             Error::DeltaTooDeep => write!(f, "delta chain too deep"),
             Error::Vcdiff(m) => write!(f, "vcdiff error: {m}"),
+            Error::UnsupportedCompressionAlgo(id) => {
+                write!(f, "unsupported compression_algo_id {id}")
+            }
+            Error::Compression(m) => write!(f, "compression error: {m}"),
             Error::NotFound => write!(f, "path not found"),
             Error::NotADirectory => write!(f, "not a directory"),
             Error::AlreadyExists => write!(f, "already exists"),

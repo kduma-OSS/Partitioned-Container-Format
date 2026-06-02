@@ -6,7 +6,7 @@
 //! ```text
 //! pfs mkfs   <file>
 //! pfs mkdir  <file> <path>
-//! pfs put    <file> <path> [<src|->]   # default reads stdin
+//! pfs put    <file> <path> [<src|->] [--store]   # default reads stdin
 //! pfs mv     <file> <src> <dst>
 //! pfs rm     <file> <path>
 //! pfs ls     <file> [<path>]
@@ -64,7 +64,7 @@ fn run(args: &[String]) -> CliResult {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  pfs mkfs   <file>\n  pfs mkdir  <file> <path>\n  pfs put    <file> <path> [<src|->]\n  pfs mv     <file> <src> <dst>\n  pfs rm     <file> <path>\n  pfs ls     <file> [<path>]\n  pfs cat    <file> <path>\n  pfs get    <file> <path> <out>\n  pfs log    <file>\n  pfs verify <file>"
+        "usage:\n  pfs mkfs   <file>\n  pfs mkdir  <file> <path>\n  pfs put    <file> <path> [<src|->] [--store]\n  pfs mv     <file> <src> <dst>\n  pfs rm     <file> <path>\n  pfs ls     <file> [<path>]\n  pfs cat    <file> <path>\n  pfs get    <file> <path> <out>\n  pfs log    <file>\n  pfs verify <file>"
     );
 }
 
@@ -104,9 +104,22 @@ fn cmd_mkdir(a: &[String]) -> CliResult {
 }
 
 fn cmd_put(a: &[String]) -> CliResult {
-    let file = arg(a, 0, "<file>")?;
-    let path = arg(a, 1, "<path>")?;
-    let src = a.get(2).map(|s| s.as_str()).unwrap_or("-");
+    // `--store` (anywhere after the file) disables compression for this write.
+    let store = a.iter().any(|s| s == "--store");
+    let positional: Vec<&str> = a
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| *s != "--store")
+        .collect();
+    let file = positional
+        .first()
+        .copied()
+        .ok_or("missing argument: <file>")?;
+    let path = positional
+        .get(1)
+        .copied()
+        .ok_or("missing argument: <path>")?;
+    let src = positional.get(2).copied().unwrap_or("-");
     let data = if src == "-" {
         let mut buf = Vec::new();
         std::io::stdin()
@@ -116,9 +129,9 @@ fn cmd_put(a: &[String]) -> CliResult {
     } else {
         std::fs::read(src).map_err(|e| format!("cannot read '{src}': {e}"))?
     };
-    open_writer(file)?
-        .put_file(path, &data)
-        .map_err(|e| e.to_string())
+    let mut w = open_writer(file)?;
+    w.set_compression(!store);
+    w.put_file(path, &data).map_err(|e| e.to_string())
 }
 
 fn cmd_mv(a: &[String]) -> CliResult {

@@ -240,6 +240,7 @@ fn materialize<S: Read + Write + Seek>(
         ContentSection::Empty => Ok(Vec::new()),
         ContentSection::Inherit => materialize(c, scan, chain, k + 1, depth + 1),
         ContentSection::Direct {
+            compression_algo,
             content_uid,
             full_size,
             full_hash_algo,
@@ -250,10 +251,11 @@ fn materialize<S: Read + Write + Seek>(
                 .get(content_uid)
                 .ok_or(Error::MissingContent)?
                 .clone();
-            let data = c.read_partition_data(&entry)?;
-            if !entry.data_hash_algo.verify(&data, &entry.data_hash) {
+            let stored = c.read_partition_data(&entry)?;
+            if !entry.data_hash_algo.verify(&stored, &entry.data_hash) {
                 return Err(Error::ContentHashMismatch);
             }
+            let data = crate::compress::decompress(*compression_algo, &stored)?;
             if data.len() as u64 != *full_size || !full_hash_algo.verify(&data, full_hash) {
                 return Err(Error::ContentHashMismatch);
             }
@@ -261,6 +263,7 @@ fn materialize<S: Read + Write + Seek>(
         }
         ContentSection::Delta {
             patch_algo,
+            compression_algo,
             patch_uid,
             full_size,
             full_hash_algo,
@@ -280,10 +283,11 @@ fn materialize<S: Read + Write + Seek>(
                 .get(patch_uid)
                 .ok_or(Error::MissingContent)?
                 .clone();
-            let patch = c.read_partition_data(&entry)?;
-            if !entry.data_hash_algo.verify(&patch, &entry.data_hash) {
+            let stored = c.read_partition_data(&entry)?;
+            if !entry.data_hash_algo.verify(&stored, &entry.data_hash) {
                 return Err(Error::ContentHashMismatch);
             }
+            let patch = crate::compress::decompress(*compression_algo, &stored)?;
             let bytes = crate::delta::apply(*patch_algo, &base, &patch)?;
             if bytes.len() as u64 != *full_size || !full_hash_algo.verify(&bytes, full_hash) {
                 return Err(Error::ContentHashMismatch);

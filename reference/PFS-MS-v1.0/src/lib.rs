@@ -36,6 +36,7 @@
 //! assert_eq!(r.read_path("docs/hello.txt").unwrap(), b"Hello, world\n");
 //! ```
 
+mod compress;
 pub mod consts;
 mod delta;
 mod error;
@@ -47,6 +48,7 @@ mod tree;
 mod vector;
 mod writer;
 
+pub use compress::{compress_deflate, decompress};
 pub use consts::*;
 pub use error::{Error, Result};
 pub use fs::FsReader;

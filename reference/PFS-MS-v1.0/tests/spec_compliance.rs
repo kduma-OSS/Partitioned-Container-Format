@@ -19,8 +19,8 @@ fn id(b: u8) -> [u8; 16] {
 #[test]
 fn appendix_a_layout_constants() {
     assert_eq!(NODE_PREFIX_LEN, 54);
-    assert_eq!(pfs_ms::DIRECT_SECTION_LEN, 90);
-    assert_eq!(pfs_ms::DELTA_SECTION_LEN, 164);
+    assert_eq!(pfs_ms::DIRECT_SECTION_LEN, 91); // includes compression_algo_id
+    assert_eq!(pfs_ms::DELTA_SECTION_LEN, 165); // includes compression_algo_id
     assert_eq!(pfs_ms::SESSION_PREFIX_LEN, 162);
     assert_eq!(pfs_ms::PFS_NODE_TYPE, 0xAAAA_0001);
     assert_eq!(pfs_ms::PFS_SESSION_TYPE, 0xAAAA_0002);
@@ -28,6 +28,8 @@ fn appendix_a_layout_constants() {
     assert_eq!(pfs_ms::NODE_MAGIC, *b"PFSN");
     assert_eq!(pfs_ms::SESSION_MAGIC, *b"PFSS");
     assert_eq!(pfs_ms::ROOT_NODE_ID, [0u8; 16]);
+    assert_eq!(pfs_ms::COMPRESS_NONE, 0);
+    assert_eq!(pfs_ms::COMPRESS_DEFLATE, 1);
 }
 
 // ---- R1: a conforming PFS reader is a conforming PCF reader --------------
@@ -170,6 +172,7 @@ fn r7_full_hash_mismatch_is_detected() {
         mode: 0,
         name: b"f".to_vec(),
         content: Some(ContentSection::Direct {
+            compression_algo: pfs_ms::COMPRESS_NONE,
             content_uid: id(0xC0),
             full_size: 5,
             full_hash_algo: HashAlgo::Sha256,
@@ -266,11 +269,11 @@ fn w3_member_blocks_carry_no_session_record() {
 #[test]
 fn reference_vector_is_byte_exact() {
     let bytes = build_reference_vector().unwrap();
-    assert_eq!(bytes.len(), 2932, "reference vector length changed");
+    assert_eq!(bytes.len(), 2986, "reference vector length changed");
     let digest = HashAlgo::Sha256.compute(&bytes);
     let hex: String = digest[..32].iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
-        hex, "a2fa2e6951b8c370a3823bb640ffb359d148c0f95f5575d122359bd20fd32acc",
+        hex, "79b6dd7093172b4fe33d57a5ca53994c387dd3149021ef4fcb2b8a3fea7429bc",
         "reference vector bytes changed"
     );
 }

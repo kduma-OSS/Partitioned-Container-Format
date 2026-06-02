@@ -117,6 +117,7 @@ fn name_collision_keeps_greater_seq() {
         mode: 0,
         name: b"dup.txt".to_vec(),
         content: Some(ContentSection::Direct {
+            compression_algo: pfs_ms::COMPRESS_NONE,
             content_uid: if node_id == a { id(0xC1) } else { id(0xC2) },
             full_size: content.len() as u64,
             full_hash_algo: HashAlgo::Sha256,
@@ -238,6 +239,94 @@ fn error_display_is_human_readable() {
     ] {
         assert!(!format!("{e}").is_empty());
     }
+}
+
+// ---- compression (Section 9.4) ------------------------------------------
+
+#[test]
+fn compressible_content_is_stored_smaller_and_reconstructs() {
+    let payload = b"PFS-MS compresses repetitive data well. ".repeat(64);
+    let mut w = FsWriter::mkfs(Cursor::new(Vec::new()), HashAlgo::Sha256).unwrap();
+    w.put_file("big.txt", &payload).unwrap();
+    let bytes = w.into_storage().into_inner();
+
+    let mut r = FsReader::open(Cursor::new(bytes)).unwrap();
+    r.verify().unwrap();
+    assert_eq!(r.read_path("big.txt").unwrap(), payload);
+
+    // The stored RAW content partition must be smaller than the raw payload.
+    let scan = r.scan().unwrap();
+    let raw = scan
+        .uid_index
+        .values()
+        .find(|e| e.partition_type == pfs_ms::RAW_TYPE && e.used_bytes > 0)
+        .unwrap();
+    assert!(
+        (raw.used_bytes as usize) < payload.len(),
+        "stored {} vs raw {}",
+        raw.used_bytes,
+        payload.len()
+    );
+}
+
+#[test]
+fn compression_can_be_disabled() {
+    let payload = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".repeat(20); // very compressible
+    let mut w = FsWriter::mkfs(Cursor::new(Vec::new()), HashAlgo::Sha256).unwrap();
+    w.set_compression(false);
+    w.put_file("v.txt", &payload).unwrap();
+    let bytes = w.into_storage().into_inner();
+
+    let mut r = FsReader::open(Cursor::new(bytes)).unwrap();
+    r.verify().unwrap();
+    assert_eq!(r.read_path("v.txt").unwrap(), payload);
+    // With compression disabled the content is stored verbatim.
+    let scan = r.scan().unwrap();
+    let raw = scan
+        .uid_index
+        .values()
+        .find(|e| e.partition_type == pfs_ms::RAW_TYPE && e.used_bytes > 0)
+        .unwrap();
+    assert_eq!(raw.used_bytes as usize, payload.len());
+}
+
+#[test]
+fn unknown_compression_algo_is_reported_on_read() {
+    // Forge a DIRECT record claiming an unimplemented compression_algo_id.
+    let mut w = FsWriter::create(Cursor::new(Vec::new()), HashAlgo::Sha256).unwrap();
+    let rec = NodeRecord {
+        kind: KIND_FILE,
+        flags: 0,
+        node_id: id(5),
+        parent_id: ROOT_NODE_ID,
+        mtime_unix_ms: 0,
+        mode: 0,
+        name: b"f".to_vec(),
+        content: Some(ContentSection::Direct {
+            compression_algo: 9, // unimplemented
+            content_uid: id(0xC0),
+            full_size: 5,
+            full_hash_algo: HashAlgo::Sha256,
+            full_hash: HashAlgo::Sha256.compute(b"hello"),
+        }),
+    };
+    w.commit(
+        vec![
+            Partition::raw(id(0xC0), "c", b"hello".to_vec()),
+            Partition::node(id(0x01), &rec),
+        ],
+        id(0x31),
+        1,
+        0,
+        b"",
+    )
+    .unwrap();
+    let bytes = w.into_storage().into_inner();
+    let mut r = FsReader::open(Cursor::new(bytes)).unwrap();
+    assert!(matches!(
+        r.read_path("f"),
+        Err(Error::UnsupportedCompressionAlgo(9))
+    ));
 }
 
 #[test]

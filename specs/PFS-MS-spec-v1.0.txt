@@ -19,6 +19,12 @@ Status of This Document
 
    The profile version described here is major version 1, minor version 0.
 
+   This pre-publication revision adds OPTIONAL per-file content compression
+   (Section 9.5): the DIRECT and DELTA content sections each carry a
+   compression_algo_id and are one byte longer than in earlier drafts. The
+   change is intentionally NOT compatible with files written by earlier drafts;
+   as the profile is unpublished, the version stays 1.0.
+
 
 -------------------------------------------------------------------------------
 Table of Contents
@@ -51,6 +57,7 @@ Table of Contents
        9.2  Delta Encoding and the Delta Algorithm Registry
        9.3  Reconstruction
        9.4  Delta Depth and Re-Baselining
+       9.5  Compression and the Compression Algorithm Registry
   10.  Filesystem Semantics
        10.1 Node Identity and the Root
        10.2 Liveness
@@ -84,7 +91,8 @@ Table of Contents
 
       - File CONTENT lives in PCF RAW partitions (type 0xFFFFFFFF). A RAW
         partition holds either the full bytes of a file or a binary patch
-        (delta) against a previous version.
+        (delta) against a previous version, in either case OPTIONALLY
+        compressed (Section 9.5).
 
       - NODE metadata lives in PFS_NODE partitions (type 0xAAAA0001). One
         PFS_NODE partition describes the complete current state of exactly
@@ -450,34 +458,38 @@ Table of Contents
          Used for renames/moves that do not change bytes.
 
       1  DIRECT
-         The full content lives in one RAW partition.
+         The full content lives in one RAW partition, optionally compressed
+         (Section 9.5).
 
-           +1   16  bytes  content_uid          (PCF uid of the RAW partition)
-           +17   8  u64    full_size            (length of the content)
-           +25   1  u8     full_hash_algo_id    (PCF hash registry id)
-           +26  64  bytes  full_hash            (hash of the full content)
-         section length = 90 bytes
+           +1    1  u8     compression_algo_id  (Section 9.5)
+           +2   16  bytes  content_uid          (PCF uid of the RAW partition)
+           +18   8  u64    full_size            (length of the DECOMPRESSED content)
+           +26   1  u8     full_hash_algo_id    (PCF hash registry id)
+           +27  64  bytes  full_hash            (hash of the full content)
+         section length = 91 bytes
 
       2  DELTA
          The content is the result of applying a patch to the previous
-         content-bearing version of this node.
+         content-bearing version of this node. The patch RAW bytes are
+         optionally compressed (Section 9.5).
 
            +1    1  u8     patch_algo_id        (Section 9.2)
-           +2   16  bytes  patch_uid            (PCF uid of the patch RAW part.)
-           +18   8  u64    full_size            (length of reconstructed content)
-           +26   1  u8     full_hash_algo_id
-           +27  64  bytes  full_hash            (hash of reconstructed content)
-           +91   8  u64    base_full_size       (length of the base)
-           +99   1  u8     base_full_hash_algo_id
-           +100 64  bytes  base_full_hash       (hash of the base; see 9.3)
-         section length = 164 bytes
+           +2    1  u8     compression_algo_id  (Section 9.5; applies to patch)
+           +3   16  bytes  patch_uid            (PCF uid of the patch RAW part.)
+           +19   8  u64    full_size            (length of reconstructed content)
+           +27   1  u8     full_hash_algo_id
+           +28  64  bytes  full_hash            (hash of reconstructed content)
+           +92   8  u64    base_full_size       (length of the base)
+           +100  1  u8     base_full_hash_algo_id
+           +101 64  bytes  base_full_hash       (hash of the base; see 9.3)
+         section length = 165 bytes
 
    full_hash and base_full_hash use the PCF Hash Algorithm Registry (PCF
    Section 8.1) and the PCF hash field encoding (left-aligned, zero-padded to
    the fixed width; here the field is 64 bytes, PCF Section 8.2). full_hash
-   commits to the FULL reconstructed content, not to the stored RAW bytes;
-   the stored RAW bytes are independently protected by the partition's PCF
-   data_hash.
+   commits to the FULL reconstructed content (after decompression), not to the
+   stored RAW bytes; the stored RAW bytes (compressed, if any) are
+   independently protected by the partition's PCF data_hash.
 
 
 -------------------------------------------------------------------------------
@@ -597,6 +609,11 @@ Table of Contents
    version), or INHERIT (same bytes as the previous version). A directory has
    no content. A tombstoned node has no content.
 
+   For DIRECT and DELTA, the bytes physically stored in the RAW partition (the
+   full content, or the patch) MAY be COMPRESSED; the content section names the
+   compression algorithm in compression_algo_id (Section 9.5). EMPTY and
+   INHERIT store no RAW bytes and are never compressed.
+
 9.2  Delta Encoding and the Delta Algorithm Registry
 
    A DELTA content section names a patch algorithm by patch_algo_id:
@@ -624,14 +641,16 @@ Table of Contents
       record V[k].content_kind:
         EMPTY    -> the empty byte string
         DIRECT   -> read the RAW partition V[k].content_uid; verify its PCF
-                    data_hash; the bytes are the content; verify that
-                    hash(bytes) == V[k].full_hash and len == full_size
+                    data_hash; let content = decompress(compression_algo_id,
+                       stored bytes) (Section 9.5); verify that
+                       hash(content) == V[k].full_hash and len == full_size
         INHERIT  -> materialize(k+1)
         DELTA    -> base  = materialize(k+1)
                     verify hash(base) == V[k].base_full_hash and
                        len(base) == V[k].base_full_size
                     read the RAW partition V[k].patch_uid; verify its PCF
                        data_hash
+                    patch = decompress(compression_algo_id, stored bytes)
                     bytes = apply(patch_algo_id, base, patch)
                     verify hash(bytes) == V[k].full_hash and
                        len == full_size
@@ -661,6 +680,41 @@ Table of Contents
    (PFS_MIN_READER_DELTA_DEPTH). Beyond an implementation-defined limit a
    Reader MAY refuse to reconstruct, reporting the file as too deeply chained
    rather than malformed.
+
+9.5  Compression and the Compression Algorithm Registry
+
+   The bytes stored in a DIRECT content RAW partition (the full content) or a
+   DELTA patch RAW partition (the patch) MAY be compressed before storage. The
+   content section's compression_algo_id names the algorithm:
+
+      ID   Algorithm   Notes
+      ---  ----------  ---------------------------------------------------
+       0   none        Stored verbatim (REQUIRED).
+       1   DEFLATE     RFC 1951 (the default and REQUIRED compression algo).
+       2   zstd        Reserved for a future revision.
+       3   brotli      Reserved for a future revision.
+      ---  ----------  ---------------------------------------------------
+
+   A conforming PFS-MS implementation MUST support compression_algo_id = 0
+   (none) and = 1 (DEFLATE, RFC 1951). Identifiers 2.. are reserved for future
+   non-conflicting additions; they do not change any byte layout. A Reader
+   encountering a compression_algo_id it does not implement MUST treat the
+   affected file as unreadable but MUST NOT treat the file or the container as
+   malformed on that basis alone (the same rule as for patch_algo_id,
+   Section 9.2).
+
+   Layering of integrity is unchanged in spirit (Section 7.3): the partition's
+   PCF data_hash protects the STORED (possibly compressed) bytes, while
+   full_hash (and, for DELTA, the result of applying the decompressed patch)
+   protects the reconstructed content. full_size is the length of the
+   reconstructed (decompressed) content; the stored length is the RAW
+   partition's used_bytes.
+
+   compression and delta compose: for DELTA the patch is first decompressed,
+   then applied to the base. A Writer SHOULD store the compressed form only
+   when it is smaller than the verbatim bytes; otherwise it SHOULD use
+   compression_algo_id = 0. Choosing DELTA vs DIRECT (Section 9.4) is decided
+   on the post-compression stored sizes the Writer intends to emit.
 
 
 -------------------------------------------------------------------------------
@@ -1016,11 +1070,14 @@ Table of Contents
    implementation and pinned as a byte-exact vector, mirroring PCF Section 15).
 
    Session 1 (session_seq = 1):
-      RAW r1  : full bytes of "hello.txt" v1 ("Hello\n")
+      RAW r1  : bytes of "hello.txt" v1, stored either verbatim
+                (compression_algo_id=0) or DEFLATE-compressed
+                (compression_algo_id=1) when smaller
       PFS_NODE: root (kind=dir, node_id=0, name="")
       PFS_NODE: dir  "docs" (kind=dir, parent=root)
       PFS_NODE: file "hello.txt" (kind=file, parent=docs,
-                content DIRECT -> r1, full_size=6)
+                content DIRECT -> r1, compression_algo_id as above,
+                full_size = decompressed length)
       PFS_SESSION: seq=1, prev_session_hash = zero, prev algo id = 0,
                 block_count = 1, member_blocks_digest = zero (algo 0)
       HEAD block T1: 5 entries, next_table_offset = 0, table_hash = H1
@@ -1083,20 +1140,22 @@ Appendix A. Field Layout Summary
 
    content_section
       +0    1  u8     content_kind  (0=EMPTY, 1=DIRECT, 2=DELTA, 3=INHERIT)
-      DIRECT (kind=1), total 90 bytes:
-        +1   16 bytes content_uid
-        +17   8 u64   full_size
-        +25   1 u8    full_hash_algo_id
-        +26  64 bytes full_hash
-      DELTA (kind=2), total 164 bytes:
-        +1    1 u8    patch_algo_id              (1 = VCDIFF)
-        +2   16 bytes patch_uid
-        +18   8 u64   full_size
+      DIRECT (kind=1), total 91 bytes:
+        +1    1 u8    compression_algo_id        (0=none, 1=DEFLATE)
+        +2   16 bytes content_uid
+        +18   8 u64   full_size                  (decompressed length)
         +26   1 u8    full_hash_algo_id
         +27  64 bytes full_hash
-        +91   8 u64   base_full_size
-        +99   1 u8    base_full_hash_algo_id
-        +100 64 bytes base_full_hash
+      DELTA (kind=2), total 165 bytes:
+        +1    1 u8    patch_algo_id              (1 = VCDIFF)
+        +2    1 u8    compression_algo_id        (0=none, 1=DEFLATE; of patch)
+        +3   16 bytes patch_uid
+        +19   8 u64   full_size
+        +27   1 u8    full_hash_algo_id
+        +28  64 bytes full_hash
+        +92   8 u64   base_full_size
+        +100  1 u8    base_full_hash_algo_id
+        +101 64 bytes base_full_hash
       EMPTY (kind=0) / INHERIT (kind=3): no further bytes
 
    PFS_SESSION record (PCF type 0xAAAA0002) -- partition data, in HEAD block
@@ -1144,6 +1203,8 @@ Appendix B. Type and Constant Registry
    Node flags       bit 0 = TOMBSTONE (others reserved, MUST be 0)
    content_kind     0 = EMPTY, 1 = DIRECT, 2 = DELTA, 3 = INHERIT
    patch_algo_id    1 = VCDIFF (RFC 3284, required), 2 = xdelta (reserved)
+   compression_algo_id  0 = none (required), 1 = DEFLATE (RFC 1951, required),
+                        2 = zstd (reserved), 3 = brotli (reserved)
 
    Limits
       PFS_MAX_NAME                    1024 bytes (UTF-8)
