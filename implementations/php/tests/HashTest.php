@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Kduma\PCF\Tests;
 
-use Kduma\PCF\Blake3;
 use Kduma\PCF\Consts;
 use Kduma\PCF\Crc64;
 use Kduma\PCF\ErrorKind;
@@ -106,11 +105,11 @@ final class HashTest extends PcfTestCase
         };
         self::assertSame(
             '42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7',
-            bin2hex(Blake3::hash($mk(1024)))
+            bin2hex(substr(HashAlgo::Blake3->compute($mk(1024)), 0, 32))
         );
         self::assertSame(
             'e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a',
-            bin2hex(Blake3::hash($mk(2048)))
+            bin2hex(substr(HashAlgo::Blake3->compute($mk(2048)), 0, 32))
         );
     }
 

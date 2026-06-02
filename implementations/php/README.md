@@ -34,19 +34,17 @@ All integers are little-endian. Free space is `max_length - used_bytes`.
 | 3  | CRC-64/XZ        | 18 | BLAKE3    |
 | 4  | MD5              |    |           |
 
-Most algorithms come from PHP's bundled `ext-hash`. The two it does not provide
-are shipped pure-PHP and validated against canonical vectors:
+Most algorithms come from PHP's bundled `ext-hash`. The two it does not provide:
 
-* **CRC-64/XZ** — `Kduma\PCF\Crc64` (check value `0x995DC9BBDF1939FA`).
-* **BLAKE3** — `Kduma\PCF\Blake3`, a port of the official reference
-  implementation covering the full chunk tree (validated against all 35 official
-  BLAKE3 test vectors).
-
-The library therefore has **no runtime Composer dependencies** beyond `ext-hash`.
+* **CRC-64/XZ** — `Kduma\PCF\Crc64` (check value `0x995DC9BBDF1939FA`), shipped
+  pure-PHP and validated against the canonical check vector.
+* **BLAKE3** — delegated to the `tourze/blake3-php` Composer package, wrapped
+  behind `HashAlgo::blake3()` so the dependency is isolated to one method.
 
 ## Requirements
 
 * PHP >= 8.1 with `ext-hash` (bundled by default).
+* Composer (for the BLAKE3 dependency).
 
 ## Installation
 

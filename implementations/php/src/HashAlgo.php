@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kduma\PCF;
 
+use Tourze\Blake3\Blake3;
+
 /**
  * Hash-algorithm registry (spec section 8).
  *
@@ -87,10 +89,18 @@ enum HashAlgo: int
             self::Sha1 => hash('sha1', $data, true),
             self::Sha256 => hash('sha256', $data, true),
             self::Sha512 => hash('sha512', $data, true),
-            self::Blake3 => Blake3::hash($data),
+            self::Blake3 => self::blake3($data),
         };
 
         return str_pad($digest, Consts::HASH_FIELD_SIZE, "\x00");
+    }
+
+    private static function blake3(string $data): string
+    {
+        $hasher = Blake3::newInstance();
+        $hasher->update($data);
+
+        return $hasher->finalize();
     }
 
     /**
