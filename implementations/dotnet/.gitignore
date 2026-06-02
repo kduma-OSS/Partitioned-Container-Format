@@ -1,0 +1,14 @@
+# Build output
+bin/
+obj/
+
+# Test / coverage artifacts
+TestResults/
+*.trx
+coverage*.xml
+coverage*.json
+lcov.info
+
+# IDE
+.vs/
+*.user
