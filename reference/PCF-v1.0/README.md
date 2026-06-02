@@ -51,6 +51,28 @@ c.verify()?;
 
 ## Tests
 
+The crate is laid out as a standard Cargo project:
+
 ```
-cargo test
+reference/PCF-v1.0/
+├── Cargo.toml
+├── src/                 # library sources
+├── tests/
+│   ├── roundtrip.rs     # end-to-end black-box tests
+│   ├── coverage.rs      # targeted error-path / edge-case tests
+│   └── spec_compliance.rs   # one test per normative MUST/SHALL in the spec
+└── examples/
+    └── gen_testvector.rs    # produces the canonical 395-byte spec test vector
 ```
+
+Run from this directory:
+
+```
+cargo test                              # all unit + integration + doc tests
+cargo run --example gen_testvector      # writes pcf_testvector.bin
+cargo llvm-cov                          # line coverage (requires cargo-llvm-cov)
+```
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy -D
+warnings`, `cargo test` on Linux/macOS/Windows, the test-vector example, and
+`cargo llvm-cov` with a 95% line / 100% function coverage floor.
