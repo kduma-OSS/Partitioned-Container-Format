@@ -1,8 +1,9 @@
 {
-  "name": "pcf",
+  "name": "@kduma-oss/pcf",
   "version": "1.0.0",
   "description": "TypeScript implementation of the Partitioned Container Format (PCF) v1.0",
   "license": "MIT OR Apache-2.0",
+  "author": "Krystian Duma",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,6 +18,25 @@
     "src",
     "README.md"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kduma-OSS/Partitioned-Container-Format.git",
+    "directory": "implementations/ts"
+  },
+  "bugs": {
+    "url": "https://github.com/kduma-OSS/Partitioned-Container-Format/issues"
+  },
+  "homepage": "https://github.com/kduma-OSS/Partitioned-Container-Format#readme",
+  "keywords": [
+    "pcf",
+    "partitioned-container-format",
+    "binary",
+    "container",
+    "file-format"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },

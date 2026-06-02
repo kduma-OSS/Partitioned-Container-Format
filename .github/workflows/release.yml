@@ -1,0 +1,221 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.1) — used when dispatched manually for a dry-run.'
+        required: true
+        type: string
+      dry_run:
+        description: 'Skip actual publication to registries (still builds and uploads artifacts).'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-binaries:
+    needs: resolve
+    uses: ./.github/workflows/build-binaries.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+
+  github-release:
+    name: GitHub Release
+    needs: [resolve, build-binaries]
+    if: needs.resolve.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Generate combined SHA256SUMS
+        run: |
+          cd dist
+          ls -la
+          sha256sum *.tar.gz *.zip 2>/dev/null > SHA256SUMS || true
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.resolve.outputs.version }}
+          name: v${{ needs.resolve.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Set workspace versions
+        shell: bash
+        run: |
+          VERSION='${{ needs.resolve.outputs.version }}'
+          sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' reference/PCF-v1.0/Cargo.toml
+          sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' reference/PFS-MS-v1.0/Cargo.toml
+          sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' tools/pcf-debug/Cargo.toml
+          sed -i 's/pcf = { path = "\.\.\/PCF-v1.0", version = "[^"]*" }/pcf = { path = "..\/PCF-v1.0", version = "'"$VERSION"'" }/' reference/PFS-MS-v1.0/Cargo.toml
+          sed -i 's/pcf = { path = "\.\.\/\.\.\/reference\/PCF-v1.0", version = "[^"]*" }/pcf = { path = "..\/..\/reference\/PCF-v1.0", version = "'"$VERSION"'" }/' tools/pcf-debug/Cargo.toml
+
+      - name: cargo publish pcf
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          ARGS=""
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then ARGS="--dry-run"; fi
+          cargo publish -p pcf --allow-dirty $ARGS
+
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
+      - name: cargo publish pfs-ms
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          ARGS=""
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then ARGS="--dry-run"; fi
+          cargo publish -p pfs-ms --allow-dirty $ARGS
+
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
+      - name: cargo publish pcf-debug
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          ARGS=""
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then ARGS="--dry-run"; fi
+          cargo publish -p pcf-debug --allow-dirty $ARGS
+
+  publish-npm:
+    name: Publish to npm
+    needs: resolve
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: implementations/ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm run build
+      - name: Set version
+        run: npm version '${{ needs.resolve.outputs.version }}' --no-git-tag-version --allow-same-version
+      - name: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            npm publish --access public --dry-run
+          else
+            npm publish --access public
+          fi
+
+  publish-nuget:
+    name: Publish to NuGet
+    needs: resolve
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: implementations/dotnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore
+      - name: dotnet pack
+        run: |
+          dotnet pack src/Pcf/Pcf.csproj \
+            -c Release \
+            -p:Version='${{ needs.resolve.outputs.version }}' \
+            -o out
+      - name: dotnet nuget push
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: |
+          dotnet nuget push out/*.nupkg \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key '${{ secrets.NUGET_API_KEY }}' \
+            --skip-duplicate
+      - name: Dry-run note
+        if: needs.resolve.outputs.dry_run == 'true'
+        run: 'echo "Dry-run - skipping dotnet nuget push. Package would be out/*.nupkg."'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: implementations/dotnet/out/*.nupkg
+
+  split-php:
+    name: Split PHP to packagist source repo
+    needs: resolve
+    if: needs.resolve.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.SPLIT_APP_ID }}
+          private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
+          owner: kduma-OSS-splits
+
+      - uses: danharrin/monorepo-split-github-action@v2.3.0
+        with:
+          package_directory: 'implementations/php'
+          repository_organization: 'kduma-OSS-splits'
+          repository_name: 'PHP-PCF-lib'
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
+          branch: 'master'
+          tag: 'v${{ needs.resolve.outputs.version }}'
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

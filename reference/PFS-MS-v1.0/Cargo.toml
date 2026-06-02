@@ -4,8 +4,11 @@ version = "1.0.0"
 edition = "2021"
 description = "Reference implementation of PFS-MS v1.0, the PCF File System Multi-Session profile"
 license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/pfs-ms"
+repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
 readme = "README.md"
+keywords = ["pcf", "pfs", "filesystem", "vcdiff", "container"]
+categories = ["encoding", "filesystem"]
 
 # This crate is a *reference* implementation of the PFS-MS profile. Like the
 # `pcf` crate it builds on, it favours a direct, auditable mapping onto the
@@ -18,7 +21,7 @@ path = "src/bin/pfs.rs"
 [dependencies]
 # The PFS-MS profile is layered strictly above PCF v1.0; every byte container
 # operation goes through the reference PCF crate.
-pcf = { path = "../PCF-v1.0" }
+pcf = { path = "../PCF-v1.0", version = "1.0.0" }
 
 # VCDIFF (RFC 3284) is the required delta algorithm (patch_algo_id = 1).
 # `oxidelta` is a pure-Rust encoder/decoder; default features (CLI, file-io,
