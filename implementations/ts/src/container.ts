@@ -68,6 +68,25 @@ interface BlockInfo {
   next: number;
 }
 
+/**
+ * One table block read from disk: its absolute `offset`, its parsed
+ * {@link TableBlockHeader} (including `tableHash` and `nextTableOffset`), and
+ * its {@link PartitionEntry} list.
+ *
+ * Returned by {@link Container.readBlockAt}. It lets code layered on PCF group
+ * blocks, inspect each block's `tableHash`, and follow non-default
+ * `nextTableOffset` chains, instead of {@link Container.entries} which flattens
+ * the whole chain.
+ */
+export interface BlockView {
+  /** Absolute file offset of the table block. */
+  offset: number;
+  /** Parsed 74-byte block header. */
+  header: TableBlockHeader;
+  /** The block's entries, in stored order. */
+  entries: PartitionEntry[];
+}
+
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) {
     return false;
@@ -240,6 +259,18 @@ export class Container {
       off = Number(h.nextTableOffset);
     }
     return out;
+  }
+
+  /**
+   * Read a single table block at an absolute `offset`, returning its parsed
+   * header (including `tableHash`) and entries. Unlike {@link entries}, which
+   * flattens the whole chain, this exposes one block at a time so a caller can
+   * follow an arbitrary `nextTableOffset` chain and inspect each block's
+   * `tableHash`. It is a read-only operation and does not alter the container.
+   */
+  readBlockAt(offset: number): BlockView {
+    const [header, entries] = this.readBlock(offset);
+    return { offset, header, entries };
   }
 
   /** Read a partition's used data. */

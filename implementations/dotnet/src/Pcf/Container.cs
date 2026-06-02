@@ -227,6 +227,20 @@ public sealed class Container
         return outp;
     }
 
+    /// <summary>
+    /// Read a single table block at an absolute <paramref name="offset"/>,
+    /// returning its parsed header (including <c>table_hash</c>) and entries.
+    /// Unlike <see cref="Entries"/>, which flattens the whole chain, this exposes
+    /// one block at a time so a caller can follow an arbitrary
+    /// <c>next_table_offset</c> chain and inspect each block's <c>table_hash</c>.
+    /// It is a read-only operation and does not alter the container.
+    /// </summary>
+    public BlockView ReadBlockAt(ulong offset)
+    {
+        (TableBlockHeader h, List<PartitionEntry> entries) = ReadBlock(offset);
+        return new BlockView(offset, h, entries);
+    }
+
     /// <summary>Read a partition's used data.</summary>
     public byte[] ReadPartitionData(PartitionEntry entry)
     {

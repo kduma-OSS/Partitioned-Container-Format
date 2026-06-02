@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  computeTableHash,
   Container,
   entryLabelString,
   freeBytes,
@@ -149,5 +150,35 @@ describe("roundtrip", () => {
     const c2 = Container.open(new MemoryStorage(out.toUint8Array()));
     c2.verify();
     expect(c2.entries().length).toBe(1);
+  });
+
+  it("readBlockAt exposes a block view", () => {
+    // First block capacity of 2 forces a second (overflow) block for 3
+    // partitions, so we can walk the chain block-by-block via readBlockAt.
+    const c = Container.createWith(new MemoryStorage(), 2, HashAlgo.Sha256);
+    for (let i = 1; i <= 3; i++) {
+      c.addPartition(i, uid(i), `p${i}`, new Uint8Array([i, i, i, i]), 0, HashAlgo.Sha256);
+    }
+
+    let off = Number(c.header().partitionTableOffset);
+    let total = 0;
+    let blocks = 0;
+    while (off !== 0) {
+      const view = c.readBlockAt(off);
+      expect(view.offset).toBe(off);
+      expect(view.entries.length).toBe(view.header.partitionCount);
+      // The exposed tableHash must match a recomputation over the block.
+      const recomputed = computeTableHash(
+        view.header.tableHashAlgo,
+        view.header.nextTableOffset,
+        view.entries,
+      );
+      expect(recomputed).toEqual(view.header.tableHash);
+      total += view.entries.length;
+      blocks++;
+      off = Number(view.header.nextTableOffset);
+    }
+    expect(total).toBe(3);
+    expect(blocks).toBe(2);
   });
 });

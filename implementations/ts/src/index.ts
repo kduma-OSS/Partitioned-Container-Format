@@ -65,4 +65,4 @@ export {
 } from "./table.js";
 export { type Storage, MemoryStorage } from "./storage.js";
 export { NodeFileStorage } from "./node-storage.js";
-export { Container } from "./container.js";
+export { Container, type BlockView } from "./container.js";

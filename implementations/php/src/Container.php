@@ -187,6 +187,21 @@ final class Container
         return $out;
     }
 
+    /**
+     * Read a single table block at an absolute offset, returning its parsed
+     * header (including table_hash) and entries.
+     *
+     * Unlike {@see entries()}, which flattens the whole chain, this exposes one
+     * block at a time so a caller can follow an arbitrary next_table_offset
+     * chain and inspect each block's table_hash. Read-only.
+     */
+    public function readBlockAt(int $offset): BlockView
+    {
+        [$h, $entries] = $this->readBlock($offset);
+
+        return new BlockView($offset, $h, $entries);
+    }
+
     /** Read a partition's used data. */
     public function readPartitionData(PartitionEntry $entry): string
     {
