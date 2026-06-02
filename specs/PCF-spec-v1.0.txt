@@ -415,11 +415,12 @@ Table of Contents
                        refin=true, refout=true, xorout=0xFFFFFFFF.
 
       CRC-64  (ID 3):  CRC-64/XZ.
-                       width=64, reflected poly 0x42F0E1EBA9EA3693,
+                       width=64, reflected poly 0xC96C5795D7870F42,
                        init=0xFFFFFFFFFFFFFFFF, refin=true, refout=true,
                        xorout=0xFFFFFFFFFFFFFFFF.
                        (This is the CRC-64 used by xz/liblzma and by .NET
-                       System.IO.Hashing.Crc64. Check value for the ASCII
+                       System.IO.Hashing.Crc64. Normal poly is
+                       0x42F0E1EBA9EA3693. Check value for the ASCII
                        input "123456789" is 0x995DC9BBDF1939FA.)
 
    SHA-256 (ID 16) is the DEFAULT and RECOMMENDED algorithm. Algorithms with
