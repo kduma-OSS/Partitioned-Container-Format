@@ -1,0 +1,23 @@
+[package]
+name = "pcf"
+version = "1.0.0"
+edition = "2021"
+description = "Reference implementation of the Partitioned Container Format (PCF) v1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://example.invalid/pcf"
+readme = "README.md"
+
+# This crate is a *reference* implementation: it favours a direct, auditable
+# mapping onto the PCF v1.0 specification over raw performance.
+
+[dependencies]
+crc   = "=3.0.1"
+sha2  = "0.10"
+sha1  = "0.10"
+md-5  = "0.10"
+blake3 = "=1.5.5"
+
+# --- MSRV pins (this environment ships rustc 1.75) -------------------------
+# The latest releases of these transitive crates require edition2024, which
+# rustc 1.75 cannot build. Constrain them to the last 1.75-compatible line.
+cpufeatures = "=0.2.12"
