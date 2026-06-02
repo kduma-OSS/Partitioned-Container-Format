@@ -737,10 +737,96 @@ Table of Contents
 15. Test Vectors
 -------------------------------------------------------------------------------
 
-   TODO: Provide a complete annotated hex dump of a small conforming file
-   (header, one Table Block with one or two entries, partition data) together
-   with the expected data_hash and table_hash values, so that independent
-   implementations can verify byte-exact conformance.
+   This section provides a complete, byte-exact reference file so that
+   independent implementations can verify conformance. The file is the
+   canonical (compacted) form of a container holding two partitions:
+
+      * Partition "alpha": type 0x00000010, UID = 16 x 0x11, data the ASCII
+        string "Hello, PCF!" (11 bytes), protected by SHA-256.
+      * Partition "raw":   type 0xFFFFFFFF (RAW/BLOB), UID = 16 x 0x22, data
+        the 8 bytes 0x00..0x07, protected by CRC-32C.
+
+   The Table Block is hashed with SHA-256. All multi-byte integers are stored
+   little-endian. Total file size is 395 bytes. An implementation that builds
+   the same logical container and emits its canonical (compacted) form MUST
+   produce these exact bytes.
+
+   ----  File Header (offset 0x0000, 20 bytes) -----------------------
+   0000  89 4B 50 52 54 0D 0A 1A                          magic = 89 'K' 'P' 'R' 'T' 0D 0A 1A
+   0008  01 00                                            version_major = 1
+   000A  00 00                                            version_minor = 0
+   000C  14 00 00 00 00 00 00 00                          partition_table_offset = 20
+
+   ----  Table Block (offset 0x0014, header 74 bytes) ---------------
+   0014  02                                               partition_count = 2
+   0015  00 00 00 00 00 00 00 00                          next_table_offset = 0  (0 = end of chain)
+   001D  10                                               table_hash_algo = 16  (16 = SHA-256)
+   001E  F5 EB FE 8C 26 B1 70 F7 C9 7C F9 2E D2 4C F6 1E  table_hash (SHA-256 of 74-byte header with this
+   002E  04 2B BD FA C5 09 9B C7 80 1F 0E 81 0F C3 27 B6    (significant bytes continue)
+   003E  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   004E  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+         field zeroed, followed by the 2 entries below)
+
+   ----  Partition Entry 0 (offset 0x005E, 141 bytes) ---------------
+   005E  10 00 00 00                                      type = 0x00000010
+   0062  11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11  uid = 16 x 0x11
+   0072  61 6C 70 68 61 00 00 00 00 00 00 00 00 00 00 00  label[0..16]  = "alpha" then NUL padding
+   0082  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label[16..32] = NUL padding
+   0092  78 01 00 00 00 00 00 00                          start_offset = 376
+   009A  0B 00 00 00 00 00 00 00                          max_length = 11
+   00A2  0B 00 00 00 00 00 00 00                          used_bytes = 11
+   00AA  10                                               data_hash_algo = 16  (16 = SHA-256)
+   00AB  DC 02 CF 82 CE C2 34 05 61 7A D4 BF 90 1C 09 75  data_hash = SHA-256("Hello, PCF!")
+   00BB  B6 4A 4B E5 7C 30 3A 8F 5C F0 A2 C2 51 CB 90 BC    (significant bytes continue)
+   00CB  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   00DB  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+
+   ----  Partition Entry 1 (offset 0x00EB, 141 bytes) ---------------
+   00EB  FF FF FF FF                                      type = 0xFFFFFFFF  (RAW / BLOB)
+   00EF  22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22  uid = 16 x 0x22
+   00FF  72 61 77 00 00 00 00 00 00 00 00 00 00 00 00 00  label[0..16]  = "raw" then NUL padding
+   010F  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label[16..32] = NUL padding
+   011F  83 01 00 00 00 00 00 00                          start_offset = 387
+   0127  08 00 00 00 00 00 00 00                          max_length = 8
+   012F  08 00 00 00 00 00 00 00                          used_bytes = 8
+   0137  02                                               data_hash_algo = 2  (2 = CRC-32C)
+   0138  3B BC 2C 8A 00 00 00 00 00 00 00 00 00 00 00 00  data_hash = CRC-32C = 0x8A2CBC3B, stored
+   0148  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   0158  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   0168  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+         as a little-endian u32, left-aligned, zero-padded
+
+   ----  Data Region (offset 0x0178, 19 bytes) ---------------------
+   0178  48 65 6C 6C 6F 2C 20 50 43 46 21                 partition 0 data = "Hello, PCF!"
+   0183  00 01 02 03 04 05 06 07                          partition 1 data = 00 01 02 03 04 05 06 07
+
+   Plain hex dump of the complete 395-byte file (16 bytes per row):
+
+   0000  89 4B 50 52 54 0D 0A 1A 01 00 00 00 14 00 00 00  .KPRT...........
+   0010  00 00 00 00 02 00 00 00 00 00 00 00 00 10 F5 EB  ................
+   0020  FE 8C 26 B1 70 F7 C9 7C F9 2E D2 4C F6 1E 04 2B  ..&.p..|...L...+
+   0030  BD FA C5 09 9B C7 80 1F 0E 81 0F C3 27 B6 00 00  ............'...
+   0040  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0050  00 00 00 00 00 00 00 00 00 00 00 00 00 00 10 00  ................
+   0060  00 00 11 11 11 11 11 11 11 11 11 11 11 11 11 11  ................
+   0070  11 11 61 6C 70 68 61 00 00 00 00 00 00 00 00 00  ..alpha.........
+   0080  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0090  00 00 78 01 00 00 00 00 00 00 0B 00 00 00 00 00  ..x.............
+   00A0  00 00 0B 00 00 00 00 00 00 00 10 DC 02 CF 82 CE  ................
+   00B0  C2 34 05 61 7A D4 BF 90 1C 09 75 B6 4A 4B E5 7C  .4.az.....u.JK.|
+   00C0  30 3A 8F 5C F0 A2 C2 51 CB 90 BC 00 00 00 00 00  0:.\...Q........
+   00D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   00E0  00 00 00 00 00 00 00 00 00 00 00 FF FF FF FF 22  ..............."
+   00F0  22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 72  """""""""""""""r
+   0100  61 77 00 00 00 00 00 00 00 00 00 00 00 00 00 00  aw..............
+   0110  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 83  ................
+   0120  01 00 00 00 00 00 00 08 00 00 00 00 00 00 00 08  ................
+   0130  00 00 00 00 00 00 00 02 3B BC 2C 8A 00 00 00 00  ........;.,.....
+   0140  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0150  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0160  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0170  00 00 00 00 00 00 00 00 48 65 6C 6C 6F 2C 20 50  ........Hello, P
+   0180  43 46 21 00 01 02 03 04 05 06 07                 CF!........
 
 
 -------------------------------------------------------------------------------
