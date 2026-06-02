@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Pcf</AssemblyName>
+    <RootNamespace>Pcf</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Reader/writer for the Partitioned Container Format (PCF) v1.0.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 0.6.x is the last Blake3 line that targets netstandard2.0 and ships
+         native runtimes for linux/macOS/windows (x64 + arm64). -->
+    <PackageReference Include="Blake3" Version="0.6.1" />
+  </ItemGroup>
+
+</Project>
