@@ -32,3 +32,6 @@ uuid = { version = "1", features = ["v7"] }
 # (compression_algo_id = 1). `flate2`'s pure-Rust miniz_oxide backend keeps the
 # crate free of C dependencies and fully portable.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# Portable file modification-time setting for the directory-import/extract tools.
+filetime = "0.2"

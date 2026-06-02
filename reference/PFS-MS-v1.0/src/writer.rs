@@ -7,6 +7,7 @@
 //! backward-linked Table Blocks and a single in-place header-pointer rewrite at
 //! commit — neither of which the PCF writer performs.
 
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,6 +60,53 @@ impl Partition {
 
 fn lbl(s: &str) -> [u8; 32] {
     encode_label(s).expect("static label is valid")
+}
+
+/// One declarative change applied to the filesystem within a single session by
+/// [`FsWriter::commit_changes`]. Paths are '/'-separated, relative to the root.
+#[derive(Debug, Clone)]
+pub enum Change {
+    /// Ensure a directory exists at `path` (a no-op if it already does).
+    Mkdir {
+        /// Directory path.
+        path: String,
+        /// POSIX permission bits (0 = unset).
+        mode: u32,
+        /// Modification time in unix milliseconds (0 = unspecified).
+        mtime_unix_ms: u64,
+    },
+    /// Create or replace the file at `path` with `content`.
+    PutFile {
+        /// File path.
+        path: String,
+        /// New file content.
+        content: Vec<u8>,
+        /// POSIX permission bits (0 = unset).
+        mode: u32,
+        /// Modification time in unix milliseconds (0 = unspecified).
+        mtime_unix_ms: u64,
+    },
+    /// Delete the node at `path` (recursive by ancestry for directories).
+    Remove {
+        /// Path to delete.
+        path: String,
+    },
+}
+
+/// Normalise a '/'-separated path: drop empty, '.', leading/trailing segments.
+fn norm_path(path: &str) -> String {
+    path.split('/')
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Split a normalised path into (parent path, final component).
+fn split_parent(path: &str) -> (String, &str) {
+    match path.rsplit_once('/') {
+        Some((p, n)) => (p.to_string(), n),
+        None => (String::new(), path),
+    }
 }
 
 /// A fresh 16-byte identifier (UUIDv7, recommended by both specs).
@@ -623,5 +671,190 @@ impl<S: Read + Write + Seek> FsWriter<S> {
         let part = Partition::node(new_id(), &tomb);
         let wid = self.writer_id.clone();
         self.commit(vec![part], new_id(), 1, now_ms(), &wid)
+    }
+
+    /// Apply a batch of [`Change`]s as a single session (one "burn"). Used by
+    /// the directory-level tooling so importing a whole tree is one session
+    /// rather than one per file. Unchanged files and already-existing
+    /// directories produce no record; if nothing changes, no session is
+    /// committed.
+    pub fn commit_changes(&mut self, changes: &[Change]) -> Result<()> {
+        let (_, view, tree) = self.snapshot()?;
+
+        // Directory path -> node_id, for resolving parents of new entries.
+        // Extended with directories created earlier in this same batch.
+        let mut dir_ids: HashMap<String, [u8; 16]> = HashMap::new();
+        dir_ids.insert(String::new(), ROOT_NODE_ID);
+
+        // Resolve a directory path to a node_id (committed tree or this batch).
+        let resolve_dir =
+            |tree: &Tree, dir_ids: &HashMap<String, [u8; 16]>, path: &str| -> Option<[u8; 16]> {
+                if let Some(id) = dir_ids.get(path) {
+                    return Some(*id);
+                }
+                let id = resolve_path(tree, path).ok()?;
+                if tree.nodes.get(&id).map(|r| r.is_dir()).unwrap_or(false) {
+                    Some(id)
+                } else {
+                    None
+                }
+            };
+
+        let mut parts: Vec<Partition> = Vec::new();
+        let mut used: HashSet<[u8; 16]> = HashSet::new();
+        let mut records = 0usize;
+
+        // Order so parents precede children: shallow Mkdir, then PutFile, then
+        // Remove (deepest first, so a child can be tombstoned before its dir).
+        let mut mkdirs: Vec<&Change> = Vec::new();
+        let mut puts: Vec<&Change> = Vec::new();
+        let mut removes: Vec<&Change> = Vec::new();
+        for c in changes {
+            match c {
+                Change::Mkdir { .. } => mkdirs.push(c),
+                Change::PutFile { .. } => puts.push(c),
+                Change::Remove { .. } => removes.push(c),
+            }
+        }
+        let depth = |p: &str| p.matches('/').count();
+        mkdirs.sort_by_key(|c| match c {
+            Change::Mkdir { path, .. } => depth(&norm_path(path)),
+            _ => 0,
+        });
+        removes.sort_by_key(|c| match c {
+            Change::Remove { path } => std::cmp::Reverse(depth(&norm_path(path))),
+            _ => std::cmp::Reverse(0),
+        });
+
+        let mark = |id: [u8; 16], used: &mut HashSet<[u8; 16]>| -> Result<()> {
+            if !used.insert(id) {
+                return Err(Error::DuplicateNodeInSession);
+            }
+            Ok(())
+        };
+
+        // ---- directories ----
+        for c in mkdirs {
+            let (path, mode, mtime) = match c {
+                Change::Mkdir {
+                    path,
+                    mode,
+                    mtime_unix_ms,
+                } => (norm_path(path), *mode, *mtime_unix_ms),
+                _ => unreachable!(),
+            };
+            if path.is_empty() {
+                continue; // the root always exists
+            }
+            // Already a live directory? Just register it.
+            if let Some(id) = resolve_dir(&tree, &dir_ids, &path) {
+                dir_ids.insert(path, id);
+                continue;
+            }
+            // A live non-directory in the way is a conflict.
+            if resolve_path(&tree, &path).is_ok() {
+                return Err(Error::NotADirectory);
+            }
+            let (parent, name) = split_parent(&path);
+            let parent_id = resolve_dir(&tree, &dir_ids, &parent).ok_or(Error::NotFound)?;
+            let node_id = new_id();
+            mark(node_id, &mut used)?;
+            let rec = NodeRecord {
+                kind: KIND_DIR,
+                flags: 0,
+                node_id,
+                parent_id,
+                mtime_unix_ms: mtime,
+                mode,
+                name: name.as_bytes().to_vec(),
+                content: None,
+            };
+            parts.push(Partition::node(new_id(), &rec));
+            records += 1;
+            dir_ids.insert(path, node_id);
+        }
+
+        // ---- files ----
+        for c in puts {
+            let (path, content, mode, mtime) = match c {
+                Change::PutFile {
+                    path,
+                    content,
+                    mode,
+                    mtime_unix_ms,
+                } => (norm_path(path), content, *mode, *mtime_unix_ms),
+                _ => unreachable!(),
+            };
+            let (parent, name) = split_parent(&path);
+            let parent_id = resolve_dir(&tree, &dir_ids, &parent).ok_or(Error::NotFound)?;
+            let name = name.as_bytes().to_vec();
+
+            // An existing live file under a committed parent is modified in
+            // place (same node_id); anything under a freshly created directory
+            // is necessarily new.
+            let existing = Self::live_child(&tree, parent_id, &name);
+            let (node_id, content_section) = match existing {
+                Some(id) => {
+                    if tree.nodes.get(&id).map(|r| r.is_dir()).unwrap_or(false) {
+                        return Err(Error::NotADirectory);
+                    }
+                    let prev = self.current_content(id)?.unwrap_or_default();
+                    if prev == *content {
+                        continue; // unchanged: no record
+                    }
+                    (
+                        id,
+                        self.build_modified_content(&mut parts, &prev, content, &view, id),
+                    )
+                }
+                None => (new_id(), self.build_new_content(&mut parts, content)),
+            };
+            mark(node_id, &mut used)?;
+            let rec = NodeRecord {
+                kind: KIND_FILE,
+                flags: 0,
+                node_id,
+                parent_id,
+                mtime_unix_ms: mtime,
+                mode,
+                name,
+                content: Some(content_section),
+            };
+            parts.push(Partition::node(new_id(), &rec));
+            records += 1;
+        }
+
+        // ---- removals ----
+        for c in removes {
+            let path = match c {
+                Change::Remove { path } => norm_path(path),
+                _ => unreachable!(),
+            };
+            let id = resolve_path(&tree, &path)?;
+            if id == ROOT_NODE_ID {
+                return Err(Error::InvalidPath("cannot delete the root"));
+            }
+            let rec = tree.nodes.get(&id).ok_or(Error::NotFound)?.clone();
+            mark(id, &mut used)?;
+            let tomb = NodeRecord {
+                kind: rec.kind,
+                flags: FLAG_TOMBSTONE,
+                node_id: id,
+                parent_id: rec.parent_id,
+                mtime_unix_ms: now_ms(),
+                mode: 0,
+                name: rec.name,
+                content: None,
+            };
+            parts.push(Partition::node(new_id(), &tomb));
+            records += 1;
+        }
+
+        if records == 0 {
+            return Ok(()); // nothing changed; no session
+        }
+        let wid = self.writer_id.clone();
+        let change_count = records.min(u16::MAX as usize) as u16;
+        self.commit(parts, new_id(), change_count, now_ms(), &wid)
     }
 }

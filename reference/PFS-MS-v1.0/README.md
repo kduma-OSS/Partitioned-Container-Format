@@ -111,6 +111,31 @@ cargo run --bin pfs -- log    fs.pfs
 cargo run --bin pfs -- verify fs.pfs
 ```
 
+### Directory commands
+
+Whole-directory import/export. Each `create` and `update` is committed as a
+**single session** (one "burn"), not one session per file.
+
+```
+# Create a new archive from a directory tree (fails if the archive exists).
+cargo run --bin pfs -- create  backup.pfs ./project
+
+# Update it from the directory: add new files, update changed ones. With
+# --delete it mirrors (tombstones archive entries no longer in the source).
+cargo run --bin pfs -- update  backup.pfs ./project
+cargo run --bin pfs -- update  backup.pfs ./project --delete
+
+# Extract the whole tree to a directory, optionally at a point in time.
+cargo run --bin pfs -- extract backup.pfs ./restore
+cargo run --bin pfs -- extract backup.pfs ./restore --at 2          # by session_seq
+cargo run --bin pfs -- extract backup.pfs ./restore --at-time 1700000000000
+```
+
+POSIX permission bits and modification time are captured on import and restored
+on extract; pass `--no-metadata` (on either side) to skip this, and `--store` to
+disable compression. Symlinks and other non-regular files are skipped with a
+warning.
+
 ## Layout
 
 ```
@@ -127,11 +152,13 @@ reference/PFS-MS-v1.0/
 │   ├── reader.rs    # backward-chain scan + node view (Sections 8, 10, 11)
 │   ├── tree.rs      # liveness, tree, reconstruction (Sections 9.3, 10)
 │   ├── fs.rs        # high-level FsReader
+│   ├── dirsync.rs   # directory <-> archive tooling (create/update/extract)
 │   ├── vector.rs    # canonical Section 17 reference vector
 │   └── bin/pfs.rs   # demo CLI
 ├── tests/
 │   ├── roundtrip.rs       # end-to-end black-box tests
 │   ├── coverage.rs        # targeted error-path / edge-case tests
+│   ├── dirsync.rs         # directory create/update/extract round-trips
 │   └── spec_compliance.rs # one test per normative MUST (R1..R8, W2/W3)
 └── examples/
     └── gen_testvector.rs  # writes pfs_ms_testvector.bin + hex dumps
@@ -141,7 +168,7 @@ reference/PFS-MS-v1.0/
 
 ```
 cargo test                          # unit + integration + doc tests
-cargo run --example gen_testvector  # writes pfs_ms_testvector.bin (2932 bytes)
+cargo run --example gen_testvector  # writes pfs_ms_testvector.bin (2986 bytes)
 cargo llvm-cov --ignore-filename-regex 'bin/|examples/'   # library coverage
 ```
 

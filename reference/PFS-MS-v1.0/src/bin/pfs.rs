@@ -14,14 +14,19 @@
 //! pfs get    <file> <path> <out>
 //! pfs log    <file>
 //! pfs verify <file>
+//! pfs create  <archive> <dir> [--store] [--no-metadata]
+//! pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]
+//! pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]
 //! ```
 
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::ExitCode;
 
 use pcf::HashAlgo;
-use pfs_ms::{FsReader, FsWriter, Tree, ROOT_NODE_ID};
+use pfs_ms::{FsReader, FsWriter, SyncOptions, Tree, ROOT_NODE_ID};
 
 type CliResult = Result<(), String>;
 
@@ -54,6 +59,9 @@ fn run(args: &[String]) -> CliResult {
         "get" => cmd_get(rest),
         "log" => cmd_log(rest),
         "verify" => cmd_verify(rest),
+        "create" => cmd_create(rest),
+        "update" => cmd_update(rest),
+        "extract" => cmd_extract(rest),
         "" | "help" | "-h" | "--help" => {
             print_usage();
             Ok(())
@@ -64,7 +72,7 @@ fn run(args: &[String]) -> CliResult {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  pfs mkfs   <file>\n  pfs mkdir  <file> <path>\n  pfs put    <file> <path> [<src|->] [--store]\n  pfs mv     <file> <src> <dst>\n  pfs rm     <file> <path>\n  pfs ls     <file> [<path>]\n  pfs cat    <file> <path>\n  pfs get    <file> <path> <out>\n  pfs log    <file>\n  pfs verify <file>"
+        "usage:\n  pfs mkfs    <file>\n  pfs mkdir   <file> <path>\n  pfs put     <file> <path> [<src|->] [--store]\n  pfs mv      <file> <src> <dst>\n  pfs rm      <file> <path>\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]"
     );
 }
 
@@ -72,6 +80,43 @@ fn arg<'a>(args: &'a [String], i: usize, what: &str) -> Result<&'a str, String> 
     args.get(i)
         .map(|s| s.as_str())
         .ok_or_else(|| format!("missing argument: {what}"))
+}
+
+/// Parsed command line: positionals, boolean flags, and `--flag value` pairs.
+struct Parsed {
+    positional: Vec<String>,
+    flags: HashSet<String>,
+    values: HashMap<String, String>,
+}
+
+/// Split `args` into positionals, boolean flags, and value flags. Any flag in
+/// `value_flags` consumes the following token as its value.
+fn parse_flags(args: &[String], value_flags: &[&str]) -> Result<Parsed, String> {
+    let mut p = Parsed {
+        positional: Vec::new(),
+        flags: HashSet::new(),
+        values: HashMap::new(),
+    };
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if let Some(name) = a.strip_prefix("--") {
+            if value_flags.contains(&name) {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| format!("flag --{name} needs a value"))?;
+                p.values.insert(name.to_string(), v.clone());
+                i += 2;
+            } else {
+                p.flags.insert(name.to_string());
+                i += 1;
+            }
+        } else {
+            p.positional.push(a.clone());
+            i += 1;
+        }
+    }
+    Ok(p)
 }
 
 fn open_rw(path: &str) -> Result<File, String> {
@@ -214,4 +259,52 @@ fn cmd_verify(a: &[String]) -> CliResult {
     open_reader(file)?.verify().map_err(|e| e.to_string())?;
     println!("ok");
     Ok(())
+}
+
+fn cmd_create(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &[])?;
+    let archive = p.positional.first().ok_or("missing argument: <archive>")?;
+    let dir = p.positional.get(1).ok_or("missing argument: <dir>")?;
+    let opts = SyncOptions {
+        compress: !p.flags.contains("store"),
+        metadata: !p.flags.contains("no-metadata"),
+        delete: false,
+    };
+    pfs_ms::create_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())
+}
+
+fn cmd_update(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &[])?;
+    let archive = p.positional.first().ok_or("missing argument: <archive>")?;
+    let dir = p.positional.get(1).ok_or("missing argument: <dir>")?;
+    let opts = SyncOptions {
+        compress: !p.flags.contains("store"),
+        metadata: !p.flags.contains("no-metadata"),
+        delete: p.flags.contains("delete"),
+    };
+    pfs_ms::update_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())
+}
+
+fn cmd_extract(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &["at", "at-time"])?;
+    let archive = p.positional.first().ok_or("missing argument: <archive>")?;
+    let dir = p.positional.get(1).ok_or("missing argument: <dir>")?;
+    let metadata = !p.flags.contains("no-metadata");
+
+    let at: Option<u64> = if let Some(seq) = p.values.get("at") {
+        Some(
+            seq.parse()
+                .map_err(|_| format!("invalid --at value '{seq}'"))?,
+        )
+    } else if let Some(ms) = p.values.get("at-time") {
+        let ms: u64 = ms
+            .parse()
+            .map_err(|_| format!("invalid --at-time value '{ms}'"))?;
+        Some(pfs_ms::session_at_time(Path::new(archive), ms).map_err(|e| e.to_string())?)
+    } else {
+        None
+    };
+
+    pfs_ms::extract_archive(Path::new(archive), Path::new(dir), at, metadata)
+        .map_err(|e| e.to_string())
 }

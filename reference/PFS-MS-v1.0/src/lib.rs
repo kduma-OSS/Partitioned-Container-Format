@@ -39,6 +39,7 @@
 mod compress;
 pub mod consts;
 mod delta;
+mod dirsync;
 mod error;
 mod fs;
 mod node;
@@ -50,6 +51,7 @@ mod writer;
 
 pub use compress::{compress_deflate, decompress};
 pub use consts::*;
+pub use dirsync::{create_archive, extract_archive, session_at_time, update_archive, SyncOptions};
 pub use error::{Error, Result};
 pub use fs::FsReader;
 pub use node::{ContentSection, NodeRecord};
@@ -57,7 +59,7 @@ pub use reader::{build_node_view, scan, verify_chain, NodeView, Scan, SessionVie
 pub use session::{member_blocks_digest, SessionRecord};
 pub use tree::{build_tree, current_delta_depth, is_live, read_file, resolve_path, Tree};
 pub use vector::build_reference_vector;
-pub use writer::{new_id, FsWriter, Partition};
+pub use writer::{new_id, Change, FsWriter, Partition};
 
 // Re-export the underlying hash registry for convenience.
 pub use pcf::HashAlgo;
