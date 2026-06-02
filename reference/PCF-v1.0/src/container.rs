@@ -295,10 +295,9 @@ impl<S: Read + Write + Seek> Container<S> {
         };
 
         // Find an existing block with reserved room.
-        let target = self
-            .blocks
-            .iter()
-            .position(|b| (b.count as u32) < b.capacity && (b.count as u32) < MAX_ENTRIES_PER_BLOCK);
+        let target = self.blocks.iter().position(|b| {
+            (b.count as u32) < b.capacity && (b.count as u32) < MAX_ENTRIES_PER_BLOCK
+        });
 
         match target {
             Some(i) => {

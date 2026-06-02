@@ -1,0 +1,23 @@
+# --- Rust / Cargo ---
+/target
+Cargo.lock
+**/*.rs.bk
+
+# --- JetBrains (RustRover / IntelliJ) ---
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Edytory ---
+*.swp
+*.swo
+*~
+.vscode/

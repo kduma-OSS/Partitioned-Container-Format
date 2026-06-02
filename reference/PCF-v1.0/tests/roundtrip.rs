@@ -14,16 +14,33 @@ fn uid(n: u8) -> [u8; 16] {
 #[test]
 fn create_add_read_verify() {
     let mut c = Container::create(Cursor::new(Vec::new())).unwrap();
-    c.add_partition(0x10, uid(1), "alpha", b"first payload", 16, HashAlgo::Sha256)
-        .unwrap();
-    c.add_partition(0xFFFF_FFFF, uid(2), "blob", b"raw bytes", 0, HashAlgo::Crc32c)
-        .unwrap();
+    c.add_partition(
+        0x10,
+        uid(1),
+        "alpha",
+        b"first payload",
+        16,
+        HashAlgo::Sha256,
+    )
+    .unwrap();
+    c.add_partition(
+        0xFFFF_FFFF,
+        uid(2),
+        "blob",
+        b"raw bytes",
+        0,
+        HashAlgo::Crc32c,
+    )
+    .unwrap();
 
     c.verify().unwrap();
     let entries = c.entries().unwrap();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].label_string().unwrap(), "alpha");
-    assert_eq!(c.read_partition_data(&entries[0]).unwrap(), b"first payload");
+    assert_eq!(
+        c.read_partition_data(&entries[0]).unwrap(),
+        b"first payload"
+    );
     assert_eq!(c.read_partition_data(&entries[1]).unwrap(), b"raw bytes");
     assert_eq!(entries[0].free_bytes(), 16);
 }
@@ -112,7 +129,10 @@ fn overflow_chain() {
     assert_eq!(e.len(), 10);
     for (idx, entry) in e.iter().enumerate() {
         let i = (idx + 1) as u8;
-        assert_eq!(c.read_partition_data(entry).unwrap(), vec![i; (i as usize) + 1]);
+        assert_eq!(
+            c.read_partition_data(entry).unwrap(),
+            vec![i; (i as usize) + 1]
+        );
     }
 }
 
@@ -160,8 +180,15 @@ fn corruption_is_detected() {
 fn compaction_reclaims_space_and_stays_valid() {
     let mut c = Container::create_with(Cursor::new(Vec::new()), 8, HashAlgo::Sha256).unwrap();
     for i in 1..=5u8 {
-        c.add_partition(i as u32, uid(i), &format!("f{i}"), &vec![i; 32], 4096, HashAlgo::Sha256)
-            .unwrap();
+        c.add_partition(
+            i as u32,
+            uid(i),
+            &format!("f{i}"),
+            &[i; 32],
+            4096,
+            HashAlgo::Sha256,
+        )
+        .unwrap();
     }
     // Remove a couple to create dead space.
     c.remove_partition(&uid(2)).unwrap();

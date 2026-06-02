@@ -48,7 +48,10 @@ fn main() {
     eprintln!("wrote {} ({} bytes)", path, image.len());
     for e in v.entries().unwrap() {
         let n = e.data_hash_algo.digest_len();
-        let hex: String = e.data_hash[..n].iter().map(|b| format!("{b:02x}")).collect();
+        let hex: String = e.data_hash[..n]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
         eprintln!(
             "  {:<6} type=0x{:08X} algo={:?} start={} used={} data_hash={}",
             e.label_string().unwrap(),
