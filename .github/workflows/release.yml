@@ -1,0 +1,232 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.0.1) — used when dispatched manually for a dry-run.'
+        required: true
+        type: string
+      dry_run:
+        description: 'Skip actual publication to registries (still builds and uploads artifacts).'
+        required: false
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      dry_run: ${{ steps.v.outputs.dry_run }}
+    steps:
+      - id: v
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-binaries:
+    needs: resolve
+    uses: ./.github/workflows/build-binaries.yml
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+
+  github-release:
+    name: GitHub Release
+    needs: [resolve, build-binaries]
+    if: needs.resolve.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: binaries-*
+          merge-multiple: true
+
+      - name: Generate combined SHA256SUMS
+        run: |
+          cd dist
+          ls -la
+          sha256sum *.tar.gz *.zip 2>/dev/null > SHA256SUMS || true
+          cat SHA256SUMS
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.resolve.outputs.version }}
+          name: v${{ needs.resolve.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Authenticate with crates.io (OIDC trusted publishing)
+        id: cargo-auth
+        if: needs.resolve.outputs.dry_run != 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: cargo publish pcf
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pcf --allow-dirty --dry-run
+          else
+            cargo publish -p pcf --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
+      - name: cargo publish pfs-ms
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pfs-ms --allow-dirty --dry-run
+          else
+            cargo publish -p pfs-ms --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
+      - name: cargo publish pcf-debug
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pcf-debug --allow-dirty --dry-run
+          else
+            cargo publish -p pcf-debug --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
+  publish-npm:
+    name: Publish to npm
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: implementations/ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+          registry-url: 'https://registry.npmjs.org'
+      - name: Ensure npm >= 11.5.1 (trusted publishing support)
+        run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm run build
+      - name: npm publish (OIDC trusted publishing, auto-provenance)
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            npm publish --access public --dry-run
+          else
+            npm publish --access public
+          fi
+
+  publish-nuget:
+    name: Publish to NuGet
+    needs: resolve
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: implementations/dotnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore
+      - name: dotnet pack
+        run: |
+          dotnet pack src/Pcf/Pcf.csproj \
+            -c Release \
+            -p:Version='${{ needs.resolve.outputs.version }}' \
+            -o out
+      - name: NuGet login (OIDC trusted publishing)
+        id: nuget-login
+        if: needs.resolve.outputs.dry_run != 'true'
+        uses: NuGet/login@v1
+        with:
+          user: kduma
+      - name: dotnet nuget push
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: |
+          dotnet nuget push out/*.nupkg \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key '${{ steps.nuget-login.outputs.NUGET_API_KEY }}' \
+            --skip-duplicate
+      - name: Dry-run note
+        if: needs.resolve.outputs.dry_run == 'true'
+        run: 'echo "Dry-run - skipping dotnet nuget push. Package would be out/*.nupkg."'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package
+          path: implementations/dotnet/out/*.nupkg
+
+  split-php:
+    name: Split PHP to packagist source repo
+    needs: resolve
+    if: needs.resolve.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.SPLIT_APP_ID }}
+          private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
+          owner: kduma-OSS-splits
+
+      - uses: danharrin/monorepo-split-github-action@v2.3.0
+        with:
+          package_directory: 'implementations/php'
+          repository_organization: 'kduma-OSS-splits'
+          repository_name: 'PHP-PCF-lib'
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
+          branch: 'master'
+          tag: 'v${{ needs.resolve.outputs.version }}'
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

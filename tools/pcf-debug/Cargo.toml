@@ -1,14 +1,19 @@
 [package]
 name = "pcf-debug"
-version = "0.1.0"
+version = "0.0.1"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
 description = "Inspection and visualisation tool for Partitioned Container Format (PCF) files"
+repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+readme = "README.md"
+keywords = ["pcf", "container", "debug", "inspector", "binary"]
+categories = ["command-line-utilities", "development-tools::debugging"]
 
 [[bin]]
 name = "pcf-debug"
 path = "src/main.rs"
 
 [dependencies]
-pcf = { path = "../../reference/PCF-v1.0" }
+pcf = { path = "../../reference/PCF-v1.0", version = "0.0.1" }

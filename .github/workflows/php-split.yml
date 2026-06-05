@@ -1,0 +1,36 @@
+name: PHP subtree split
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'implementations/php/**'
+      - '.github/workflows/php-split.yml'
+
+jobs:
+  split:
+    name: split implementations/php → kduma-OSS-splits/PHP-PCF-lib
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.SPLIT_APP_ID }}
+          private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
+          owner: kduma-OSS-splits
+
+      - uses: danharrin/monorepo-split-github-action@v2.3.0
+        with:
+          package_directory: 'implementations/php'
+          repository_organization: 'kduma-OSS-splits'
+          repository_name: 'PHP-PCF-lib'
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
+          branch: 'master'
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}

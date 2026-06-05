@@ -9,12 +9,31 @@
     <RootNamespace>Pcf</RootNamespace>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <Description>Reader/writer for the Partitioned Container Format (PCF) v1.0.</Description>
+
+    <PackageId>KDuma.Pcf</PackageId>
+    <Version>0.0.1</Version>
+    <Authors>Krystian Duma</Authors>
+    <Company>kduma-OSS</Company>
+    <Product>Partitioned Container Format</Product>
+    <Copyright>Copyright (c) Krystian Duma</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/kduma-OSS/Partitioned-Container-Format</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kduma-OSS/Partitioned-Container-Format</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>pcf;partitioned-container-format;binary;container;file-format</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <ItemGroup>
     <!-- 0.6.x is the last Blake3 line that targets netstandard2.0 and ships
          native runtimes for linux/macOS/windows (x64 + arm64). -->
     <PackageReference Include="Blake3" Version="0.6.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

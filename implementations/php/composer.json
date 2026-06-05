@@ -1,9 +1,14 @@
 {
-    "name": "kduma-oss/pcf",
+    "name": "kduma/pcf",
     "description": "PHP implementation of the Partitioned Container Format (PCF) v1.0",
     "type": "library",
     "license": "MIT",
     "keywords": ["pcf", "partitioned-container-format", "binary", "container", "file-format"],
+    "homepage": "https://github.com/kduma-OSS/Partitioned-Container-Format",
+    "support": {
+        "issues": "https://github.com/kduma-OSS/Partitioned-Container-Format/issues",
+        "source": "https://github.com/kduma-OSS-splits/PHP-PCF-lib"
+    },
     "require": {
         "php": ">=8.1",
         "ext-hash": "*",

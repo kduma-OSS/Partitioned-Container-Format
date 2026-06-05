@@ -1,11 +1,14 @@
 [package]
 name = "pcf"
-version = "1.0.0"
+version = "0.0.1"
 edition = "2021"
 description = "Reference implementation of the Partitioned Container Format (PCF) v1.0"
 license = "MIT OR Apache-2.0"
-repository = "https://example.invalid/pcf"
+repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
 readme = "README.md"
+keywords = ["pcf", "container", "binary", "file-format", "partitioned"]
+categories = ["encoding", "filesystem", "parser-implementations"]
 
 # This crate is a *reference* implementation: it favours a direct, auditable
 # mapping onto the PCF v1.0 specification over raw performance.

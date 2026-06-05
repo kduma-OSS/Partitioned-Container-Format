@@ -1,0 +1,152 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version string to embed in artifact filenames (e.g. 1.0.1). If empty, derived from git.'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      version:
+        description: 'Resolved version string used for the artifacts.'
+        value: ${{ jobs.resolve-version.outputs.version }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  resolve-version:
+    name: resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: v
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          elif [ "${GITHUB_REF#refs/tags/}" != "${GITHUB_REF}" ]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.0-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: resolve-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+            bin-suffix: ''
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            archive: tar.gz
+            bin-suffix: ''
+          - target: universal2-apple-darwin
+            runner: macos-latest
+            archive: tar.gz
+            bin-suffix: ''
+            macos-targets: 'x86_64-apple-darwin aarch64-apple-darwin'
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+            bin-suffix: '.exe'
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            archive: zip
+            bin-suffix: '.exe'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.macos-targets || matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build (single target)
+        if: matrix.target != 'universal2-apple-darwin'
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} -p pcf-debug
+          cargo build --release --target ${{ matrix.target }} -p pfs-ms --bin pfs
+
+      - name: Build (macOS universal2)
+        if: matrix.target == 'universal2-apple-darwin'
+        shell: bash
+        run: |
+          for t in ${{ matrix.macos-targets }}; do
+            cargo build --release --target "$t" -p pcf-debug
+            cargo build --release --target "$t" -p pfs-ms --bin pfs
+          done
+          mkdir -p target/universal2-apple-darwin/release
+          lipo -create -output target/universal2-apple-darwin/release/pcf-debug \
+            target/x86_64-apple-darwin/release/pcf-debug \
+            target/aarch64-apple-darwin/release/pcf-debug
+          lipo -create -output target/universal2-apple-darwin/release/pfs \
+            target/x86_64-apple-darwin/release/pfs \
+            target/aarch64-apple-darwin/release/pfs
+          file target/universal2-apple-darwin/release/pcf-debug
+          file target/universal2-apple-darwin/release/pfs
+
+      - name: Stage and archive (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          VERSION='${{ needs.resolve-version.outputs.version }}'
+          TARGET='${{ matrix.target }}'
+          mkdir -p staging
+          for bin in pcf-debug pfs; do
+            STAGE="staging/${bin}-${VERSION}-${TARGET}"
+            mkdir -p "$STAGE"
+            cp "target/${TARGET}/release/${bin}" "$STAGE/${bin}"
+            cp README.md "$STAGE/" 2>/dev/null || true
+            tar -czf "${STAGE}.tar.gz" -C staging "${bin}-${VERSION}-${TARGET}"
+            (cd staging && shasum -a 256 "${bin}-${VERSION}-${TARGET}.tar.gz" > "${bin}-${VERSION}-${TARGET}.tar.gz.sha256")
+          done
+
+      - name: Stage and archive (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $version = '${{ needs.resolve-version.outputs.version }}'
+          $target  = '${{ matrix.target }}'
+          New-Item -ItemType Directory -Force staging | Out-Null
+          foreach ($bin in @('pcf-debug', 'pfs')) {
+            $stage = "staging/$bin-$version-$target"
+            New-Item -ItemType Directory -Force $stage | Out-Null
+            Copy-Item "target/$target/release/$bin.exe" "$stage/$bin.exe"
+            if (Test-Path README.md) { Copy-Item README.md "$stage/" }
+            Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force
+            $hash = (Get-FileHash "$stage.zip" -Algorithm SHA256).Hash.ToLower()
+            "$hash  $bin-$version-$target.zip" | Set-Content "$stage.zip.sha256"
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: |
+            staging/*.tar.gz
+            staging/*.tar.gz.sha256
+            staging/*.zip
+            staging/*.zip.sha256
+          if-no-files-found: error
+          retention-days: 90
