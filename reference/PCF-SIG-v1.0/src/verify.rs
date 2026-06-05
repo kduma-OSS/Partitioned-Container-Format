@@ -98,63 +98,6 @@ pub enum DataRecheck {
     Recompute,
 }
 
-/// Find every signer whose Valid signature in `reports` countersigns the
-/// PCFSIG_KEY partition whose fingerprint is `leaf_key_fingerprint` (spec
-/// Section 12.2). Returns the deduplicated `signer_key_fingerprint`s of those
-/// signers, in first-seen order. Self-endorsement (a signer endorsing its own
-/// key) is filtered out as semantically vacuous.
-///
-/// The container is consulted to locate the leaf PCFSIG_KEY partition by
-/// fingerprint; if no such partition exists in the file the result is empty.
-///
-/// The reports passed in MUST come from [`verify_all`] or
-/// [`verify_all_with_recheck`] on the same container; the function does not
-/// re-verify any signatures.
-pub fn key_endorsements<S: Read + Write + Seek>(
-    container: &mut Container<S>,
-    reports: &[SignatureReport],
-    leaf_key_fingerprint: &[u8; FINGERPRINT_SIZE],
-) -> Result<Vec<[u8; FINGERPRINT_SIZE]>> {
-    // 1. Locate the leaf PCFSIG_KEY partition's PCF uid by fingerprint.
-    let entries = container.entries()?;
-    let mut leaf_key_uid: Option<[u8; UID_SIZE]> = None;
-    for e in &entries {
-        if e.partition_type == TYPE_PCFSIG_KEY {
-            let data = container.read_partition_data(e)?;
-            if let Ok(rec) = KeyRecord::from_bytes(&data) {
-                if &rec.fingerprint == leaf_key_fingerprint {
-                    leaf_key_uid = Some(e.uid);
-                    break;
-                }
-            }
-        }
-    }
-    let leaf_key_uid = match leaf_key_uid {
-        Some(u) => u,
-        None => return Ok(Vec::new()),
-    };
-
-    // 2. Scan reports for Valid signatures whose manifests cover that uid.
-    let mut endorsers: Vec<[u8; FINGERPRINT_SIZE]> = Vec::new();
-    for r in reports {
-        if !matches!(r.verdict, ManifestVerdict::Valid) {
-            continue;
-        }
-        if &r.signer_key_fingerprint == leaf_key_fingerprint {
-            // Self-endorsement is semantically empty.
-            continue;
-        }
-        let endorses = r
-            .entries
-            .iter()
-            .any(|er| er.uid == leaf_key_uid && matches!(er.verdict, EntryVerdict::Valid));
-        if endorses && !endorsers.contains(&r.signer_key_fingerprint) {
-            endorsers.push(r.signer_key_fingerprint);
-        }
-    }
-    Ok(endorsers)
-}
-
 /// Verify every PCFSIG_SIG partition in `container` and return one report
 /// each. Returns an empty vector if the container has no signatures.
 pub fn verify_all<S: Read + Write + Seek>(

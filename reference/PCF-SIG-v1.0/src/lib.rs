@@ -49,7 +49,6 @@
 
 mod algo;
 pub mod consts;
-mod endorse;
 mod error;
 mod key;
 mod manifest;
@@ -59,10 +58,6 @@ mod verify;
 
 pub use algo::{KeyFormat, SigAlgo};
 pub use consts::*;
-pub use endorse::{
-    embed_endorsement, expected_leaf_key_data_hash, fingerprint_of, issue_endorsement,
-    EndorsementRequest, EndorsementResponse,
-};
 pub use error::{Error, Result};
 pub use key::{compute_fingerprint, KeyMetadata, KeyRecord};
 pub use manifest::{is_crypto_hash, Manifest, SignedEntry};
@@ -71,6 +66,6 @@ pub use sign::{
     ensure_key_partition, sign_partitions, signed_entry_from_partition, SigningMaterial,
 };
 pub use verify::{
-    key_endorsements, verify_all, verify_all_with_recheck, DataRecheck, EntryReport, EntryVerdict,
-    ManifestVerdict, SignatureReport, UnverifiableReason,
+    verify_all, verify_all_with_recheck, DataRecheck, EntryReport, EntryVerdict, ManifestVerdict,
+    SignatureReport, UnverifiableReason,
 };
