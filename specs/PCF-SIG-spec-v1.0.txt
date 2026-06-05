@@ -1,0 +1,1503 @@
+===============================================================================
+       PCF-SIG -- PCF Cryptographic Signatures, Profile Specification
+                     Specification Version 1.0
+===============================================================================
+
+Status of This Document
+
+   This document specifies version 1.0 of PCF-SIG, an application-level
+   profile that uses the Partitioned Container Format (PCF) version 1.0 to
+   add CRYPTOGRAPHIC AUTHENTICATION of partition contents. It defines two
+   new partition kinds: PCFSIG_KEY, which carries a signer's public key or
+   X.509 certificate chain, and PCFSIG_SIG, which carries a digital
+   signature over a manifest committing to one or more other partitions.
+
+   PCF-SIG does NOT modify, extend, or fork PCF. A PCF-SIG file is a fully
+   conforming PCF v1.0 file. All structures defined here live inside PCF
+   partitions and inside the application-defined portions of PCF entries.
+   This profile is layered strictly above the PCF specification; where the
+   two appear to conflict, the PCF specification governs the byte
+   container and this document governs only the interpretation of
+   partition contents.
+
+   The profile version described here is major version 1, minor version 0.
+
+
+-------------------------------------------------------------------------------
+Table of Contents
+-------------------------------------------------------------------------------
+
+   1.  Introduction
+   2.  Relationship to PCF
+   3.  Conventions and Terminology
+       3.1  Requirement Keywords
+       3.2  Terminology
+       3.3  Data Types and Byte Order
+   4.  Profile Model Overview
+       4.1  Selective Signing
+       4.2  Relocation Stability
+       4.3  Key Partitions vs Signature Partitions
+       4.4  Multi-Signer Semantics
+   5.  Partition Types and Reserved Values
+   6.  Key Partition (PCFSIG_KEY)
+       6.1  Layout
+       6.2  Key Formats
+       6.3  Fingerprint
+       6.4  Optional Metadata TLV
+   7.  Signature Partition (PCFSIG_SIG)
+       7.1  Manifest Layout
+       7.2  Signed Entry
+       7.3  Signature and Trailer
+       7.4  Protected vs Unprotected Fields
+   8.  Signature Algorithm Registry
+   9.  Cryptographic Hash Requirement
+   10. Signing Procedure
+   11. Verification Procedure
+   12. Multi-Signer Semantics
+   13. Reader Algorithms (Informative)
+   14. Writer Algorithms (Informative)
+   15. Conformance and Validation
+   16. Versioning
+   17. Future Considerations (Informative)
+   18. Assumptions and Design Decisions (Informative)
+   19. Test Vectors
+   Appendix A. Field Layout Summary
+   Appendix B. Type and Constant Registry
+
+
+-------------------------------------------------------------------------------
+1. Introduction
+-------------------------------------------------------------------------------
+
+   PCF v1.0 protects every partition's integrity with a 64-byte data_hash
+   field and protects every Table Block with a table_hash. This cascade
+   detects accidental corruption and casual tampering, but it does not
+   protect AUTHENTICITY: any party with write access to the file can
+   recompute the hashes and impersonate the original author.
+
+   PCF-SIG closes that gap by adding digital signatures while leaving the
+   PCF byte layout untouched. A signature is itself a regular PCF
+   partition carrying a manifest that commits to a chosen set of other
+   partitions by 16-byte uid and 64-byte data_hash. A separate partition
+   kind carries the public key or X.509 certificate chain that produced
+   the signature, referenced by a cryptographic key fingerprint so that
+   one key can be reused across many signatures.
+
+   The design has four guiding properties:
+
+      (a) SELECTIVE SIGNING. A signature covers exactly the partitions a
+          Writer chooses to enumerate. Different signatures in the same
+          file MAY cover overlapping, disjoint, or nested sets.
+
+      (b) RELOCATION STABILITY. Signatures commit only to data_hash and
+          identity fields, never to file offsets or pre-allocated
+          reservations. PCF compaction, in-place growth, max_length
+          changes, and Table Block chain reorganisation all preserve the
+          validity of an existing signature, as long as the partition's
+          stored bytes do not change.
+
+      (c) MULTI-SIGNER. One PCFSIG_SIG partition is one signature. A
+          file MAY contain any number of signatures from any number of
+          signers; verifiers process each independently.
+
+      (d) KEY DEDUPLICATION. The signing material lives in PCFSIG_KEY
+          partitions, addressed by SHA-256 fingerprint. A single key
+          partition can serve any number of signatures by the same
+          signer.
+
+   PCF-SIG is the realisation of the "dedicated signature partition"
+   facility anticipated by PCF Section 13 (Future Considerations) and
+   PFS-MS Section 15.
+
+
+-------------------------------------------------------------------------------
+2. Relationship to PCF
+-------------------------------------------------------------------------------
+
+   A PCF-SIG file MUST be a conforming PCF v1.0 file (PCF Section 12). In
+   particular:
+
+      - The 20-byte PCF File Header is present at offset 0 with the
+        exact PCF magic and version_major = 1, version_minor = 0.
+
+      - Every PCF-SIG partition is a normal PCF partition with its own
+        PCF Partition Entry: a unique 16-byte PCF uid, a start_offset, a
+        max_length, a used_bytes, and a data_hash. The PCF data_hash of
+        a PCFSIG_KEY or PCFSIG_SIG partition is computed exactly as for
+        any other partition (PCF Section 8.3), and it covers the stored
+        record bytes including the cryptographic signature where
+        applicable. The cryptographic signature is a separate object
+        layered ABOVE the PCF data_hash.
+
+      - The PCF partition table is a chain of PCF Table Blocks linked by
+        next_table_offset, terminated by 0.
+
+   PCF-SIG constrains, but does not change, how these PCF facilities are
+   used. The two reserved application type values 0xAAAB0001 and
+   0xAAAB0002 are an application convention permitted by PCF
+   Section 7.1 (any value in 0x00000001..0xFFFFFFFE is available to the
+   application).
+
+   A generic PCF reader that knows nothing of this profile will still
+   see a valid file: it will traverse the Table Block chain and
+   enumerate every partition as a flat set, and it will verify every
+   table_hash and data_hash. It will not, of course, verify
+   cryptographic signatures; that is the job of a PCF-SIG reader
+   (Section 13).
+
+   PCF-SIG composes with other PCF profiles. A PFS-MS file (PFS-MS
+   Section 1) MAY additionally carry PCF-SIG partitions; the signatures
+   then anchor a chosen set of file content, node records, or session
+   records by their PCF uids, exactly like any other partition.
+
+
+-------------------------------------------------------------------------------
+3. Conventions and Terminology
+-------------------------------------------------------------------------------
+
+3.1  Requirement Keywords
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in RFC 2119.
+
+3.2  Terminology
+
+   Key Partition  A PCFSIG_KEY partition. Its data is one Key Record
+                  (Section 6) carrying one signer's public key, raw or
+                  as an X.509 certificate (chain).
+
+   Signature      A PCFSIG_SIG partition. Its data is one Manifest
+   Partition      followed by the signature bytes that authenticate
+                  the manifest, plus an OPTIONAL trailer (Section 7).
+
+   Manifest       The serialized, byte-canonical structure that
+                  enumerates the partitions a signature covers and
+                  identifies the signer's key by fingerprint
+                  (Section 7.1).
+
+   Signed Entry   One entry inside a Manifest, naming exactly one
+                  partition that the signature covers (Section 7.2).
+
+   Fingerprint    A 32-byte SHA-256 digest of a key's canonical
+                  representation (Section 6.3). Identifies a
+                  PCFSIG_KEY partition.
+
+   Signer         The party (and, transitively, the private key) that
+                  produced a signature.
+
+   Verifier       Software that processes PCFSIG_KEY and PCFSIG_SIG
+                  partitions to confirm authenticity.
+
+   Protected      A field of a PCF Partition Entry that the manifest
+   field          commits to, so that altering it invalidates the
+                  signature (Section 7.4).
+
+   This document additionally uses, unchanged, the PCF terms File,
+   Reader, Writer, Partition, Partition Table, Table Block, Entry, and
+   UID.
+
+3.3  Data Types and Byte Order
+
+   PCF-SIG uses the same conventions as PCF Section 2.3. All multi-byte
+   integers in PCF-SIG records are unsigned and LITTLE-ENDIAN (u8, u16,
+   u32, u64); the only signed type is i64 for timestamps. Byte arrays
+   (record magics, PCF uid references, fingerprints, hashes, signature
+   bytes, key bytes) are stored in file order and are not subject to
+   endianness conversion. All "PCF uid" reference fields hold a 16-byte
+   value copied verbatim from the referenced partition's PCF Entry uid.
+
+   Cryptographic signatures themselves are byte strings produced by the
+   selected algorithm and are stored verbatim; their internal structure
+   (e.g., DER encoding for ECDSA) is defined by the algorithm, not by
+   this profile.
+
+
+-------------------------------------------------------------------------------
+4. Profile Model Overview
+-------------------------------------------------------------------------------
+
+4.1  Selective Signing
+
+   A signature partition commits to a manifest that lists the partitions
+   it covers by 16-byte PCF uid. The set is chosen freely by the Writer
+   and MAY be any subset of the file's partitions other than the
+   signature partition itself (Section 7.2). A signature does NOT
+   implicitly cover every partition in the file, every entry in a Table
+   Block, or any partition not listed in its manifest. Verifiers report
+   per-partition coverage, not whole-file coverage.
+
+   Selective signing supports practical use cases including: a single
+   file with multiple independently authored sections each signed by
+   their author; a delivery container where only the payload partitions
+   are signed and audit metadata is left unsigned; and the targeted
+   protection of a specific PFS_NODE record without re-signing the
+   entire history.
+
+4.2  Relocation Stability
+
+   A manifest commits to fields that describe WHAT a partition is, not
+   WHERE it lives. The set of protected fields (Section 7.4) excludes
+   start_offset and max_length entirely, so a Writer MAY freely:
+
+      - run a PCF compaction (PCF Section 11.5), which relocates every
+        partition and trims max_length to used_bytes;
+      - grow a partition's reservation by relocating it to a larger
+        region;
+      - add, remove, or merge Table Blocks and re-link
+        next_table_offset chains;
+      - re-order partitions within a Table Block.
+
+   None of these operations invalidates an existing PCF-SIG signature,
+   provided the partition's stored bytes (and therefore its data_hash)
+   are unchanged. Any operation that DOES change the stored bytes -- a
+   data update, a hash-algorithm change, a label change, a type change
+   -- changes a protected field and invalidates the signature, which is
+   exactly the intended semantics.
+
+4.3  Key Partitions vs Signature Partitions
+
+   Keys and signatures live in separate partitions:
+
+      - A PCFSIG_KEY partition holds one signer's public key material
+        and is identified by a 32-byte SHA-256 fingerprint of that
+        material (Section 6.3). It carries no signature itself.
+
+      - A PCFSIG_SIG partition holds one manifest plus the bytes of
+        one signature over that manifest. It references its signing
+        key by fingerprint, not by uid.
+
+   This separation gives key deduplication for free: a signer who
+   produces ten signatures over different subsets of partitions
+   contributes one PCFSIG_KEY partition and ten PCFSIG_SIG
+   partitions. A Writer SHOULD reuse one PCFSIG_KEY partition per
+   distinct signing key per file; a Verifier MUST locate the
+   referenced key by fingerprint and MUST NOT assume any particular
+   placement in the chain.
+
+4.4  Multi-Signer Semantics
+
+   A file MAY contain any number of PCFSIG_SIG partitions. They
+   compose by intersection of trust: a Verifier reports, for each
+   partition uid, the set of signers whose signature covers it and
+   verified successfully. Application policy (M-of-N, role-based
+   acceptance, countersignature requirements) is OUT OF SCOPE for
+   this profile; the profile reports facts, not policy.
+
+   Signature partitions are independent. The validity of one
+   signature is not affected by the addition, removal, or
+   invalidation of another. The presence of one signature does NOT
+   imply that any other partition in the file is signed or trusted.
+
+
+-------------------------------------------------------------------------------
+5. Partition Types and Reserved Values
+-------------------------------------------------------------------------------
+
+   PCF-SIG assigns the following PCF type values, from the reserved
+   application range 0xAAAB0000..0xAAAB00FF that this profile claims
+   (analogously to the 0xAAAA0000..0xAAAA00FF range used by PFS-MS;
+   the partitioning of the application type space is by convention,
+   PCF Section 13):
+
+      Type         Name          Meaning
+      -----------  ------------  ------------------------------------------
+      0xAAAB0001   PCFSIG_KEY    One Key Record (Section 6).
+      0xAAAB0002   PCFSIG_SIG    One Signature Partition (Section 7).
+      -----------  ------------  ------------------------------------------
+
+   Type values 0xAAAB0003..0xAAAB00FF are reserved by this profile for
+   future minor-version extensions (e.g., revocation lists, timestamp
+   tokens). A Writer MUST NOT assign PCFSIG_KEY or PCFSIG_SIG to a
+   partition whose data is not the corresponding record. A Reader MUST
+   ignore, for signature verification, any partition whose type is
+   none of the two above; such partitions are permitted (a PCF-SIG
+   file MAY carry unrelated PCF partitions) but carry no PCF-SIG
+   meaning.
+
+   The PCF reserved values retain their PCF meaning: type 0x00000000
+   and the NIL PCF uid MUST NOT be used for any live partition (PCF
+   Section 7). The PCF uid of a PCFSIG_KEY or PCFSIG_SIG partition is
+   chosen by the Writer like any other PCF uid; the partition is
+   identified for PCF-SIG purposes by its CONTENT (key fingerprint, or
+   manifest signer fingerprint), not by its uid.
+
+
+-------------------------------------------------------------------------------
+6. Key Partition (PCFSIG_KEY)
+-------------------------------------------------------------------------------
+
+   The data of a PCFSIG_KEY partition is exactly one Key Record. The
+   partition's used_bytes equals the record length; its PCF data_hash
+   covers the record (PCF Section 8.3) as for any partition.
+
+6.1  Layout
+
+      Offset  Size  Type   Field
+      ------  ----  -----  --------------------------------------------------
+        0      8    bytes  record_magic    = "PCFKEY\0\0"
+                                            = 50 43 46 4B 45 59 00 00
+        8      2    u16    record_version_major   = 1
+       10      2    u16    record_version_minor   = 0
+       12      1    u8     key_format_id   (Section 6.2)
+       13      3    bytes  reserved        (MUST be 0)
+       16     32    bytes  fingerprint     (Section 6.3; SHA-256)
+       48      4    u32    key_data_length (length of key_data, in bytes)
+       52      N    bytes  key_data        (N = key_data_length)
+       52+N   ...   bytes  optional_metadata (Section 6.4; MAY be absent)
+      ------  ----  -----  --------------------------------------------------
+      total length = 52 + N + metadata_length
+
+   record_magic
+      MUST be the eight bytes "PCFKEY\0\0". A Reader MUST treat a
+      PCFSIG_KEY partition whose data does not begin with this magic
+      as malformed.
+
+   record_version_major, record_version_minor
+      Version of the Key Record schema. This document defines major 1,
+      minor 0. A Reader MUST reject a record whose major is not
+      implemented; it MAY accept a higher minor, ignoring fields it
+      does not understand (mirroring PCF Section 9).
+
+   key_format_id
+      One byte identifying the encoding of key_data (Section 6.2).
+
+   reserved
+      Three bytes, MUST be written as zero. Reserved for future use
+      (e.g., key usage flags). A Reader MUST NOT reject a record on
+      the basis of non-zero reserved bytes in a higher minor version.
+
+   fingerprint
+      The 32-byte SHA-256 digest of key_data, computed exactly as
+      described in Section 6.3. A Reader MUST recompute and compare
+      this field; a mismatch renders the record malformed.
+
+   key_data_length
+      Length in bytes of key_data. MUST be greater than zero.
+
+   key_data
+      Raw bytes of the key in the encoding named by key_format_id.
+
+   optional_metadata
+      Zero or more Type-Length-Value (TLV) entries, ending at the
+      partition's used_bytes boundary (Section 6.4).
+
+6.2  Key Formats
+
+   key_format_id values:
+
+      ID   Format                Notes
+      ---  --------------------  -----------------------------------------
+       0   reserved              MUST NOT appear.
+       1   Ed25519 raw           32-byte raw public key (RFC 8032).
+       2   RSA SPKI DER          SubjectPublicKeyInfo DER (RFC 5280).
+       3   ECDSA SPKI DER        SubjectPublicKeyInfo DER carrying the
+                                 named-curve parameters (P-256, P-384,
+                                 P-521 per RFC 5480).
+      16   X.509 certificate     One DER-encoded X.509 certificate.
+                                 key_data is the DER bytes.
+      17   X.509 cert chain      Length-prefixed chain of DER X.509
+                                 certificates, leaf first. Each entry is
+                                 (u32 LE length) followed by that many
+                                 bytes of DER.
+      ---  --------------------  -----------------------------------------
+
+   IDs 4..15 are reserved for raw-key formats (other curves, post-
+   quantum algorithms) and 18..127 for certificate-bearing formats. IDs
+   128..255 are reserved for application-private formats and MUST NOT
+   appear in interoperable files.
+
+   For SPKI- or certificate-bearing formats, the cryptographic key
+   actually used to verify a signature is the SubjectPublicKeyInfo's
+   public key (for IDs 2, 3) or the leaf certificate's
+   SubjectPublicKeyInfo (for IDs 16, 17). The Verifier MUST extract it
+   from key_data deterministically.
+
+6.3  Fingerprint
+
+   fingerprint is computed as SHA-256 over key_data exactly as stored
+   in the partition (bytes [52 .. 52 + key_data_length)). The
+   fingerprint is therefore stable across PCF compactions: it depends
+   only on the key material, not on file placement.
+
+   For key_format_id = 17 (X.509 chain), the fingerprint covers the
+   whole length-prefixed chain, not the leaf alone. A Writer that wants
+   leaf-only fingerprinting MUST use key_format_id = 16.
+
+   The fingerprint is the public identity of a key inside this file. A
+   PCFSIG_SIG manifest references its signer by fingerprint
+   (Section 7.1). A Writer MUST NOT include two PCFSIG_KEY partitions
+   with the same fingerprint in one file; a Reader that nonetheless
+   encounters duplicates MUST treat them as redundant (any of them MAY
+   be used for verification) and SHOULD emit a diagnostic.
+
+6.4  Optional Metadata TLV
+
+   Beyond key_data, a Key Record MAY carry zero or more metadata TLV
+   entries. Each entry has the layout:
+
+      Offset  Size  Type   Field
+      ------  ----  -----  --------------------------------------------------
+        0      2    u16    tag      (Type registry below)
+        2      4    u32    length   (length of value, in bytes)
+        6      L    bytes  value    (L = length)
+      ------  ----  -----  --------------------------------------------------
+
+   The TLV stream begins at offset 52 + key_data_length and ends at
+   the partition's used_bytes boundary. A Reader MUST stop parsing
+   when no further entries fit and MUST treat a partial entry at the
+   end as malformed.
+
+   Defined tags in v1.0:
+
+      Tag    Meaning                              Value encoding
+      -----  ------------------------------------ ----------------------------
+      0x0000 reserved (MUST NOT appear)
+      0x0001 Subject Distinguished Name           UTF-8 text
+      0x0002 Not-Before (validity period start)   i64 LE Unix seconds
+      0x0003 Not-After  (validity period end)     i64 LE Unix seconds
+      0x0004 Issuer Distinguished Name            UTF-8 text
+      0x0005 Free-form comment                    UTF-8 text
+      -----  ------------------------------------ ----------------------------
+
+   Tags 0x0006..0x7FFF are reserved for future registration. Tags
+   0x8000..0xFFFF are reserved for application-private use and MUST be
+   ignored by a Reader that does not recognise them.
+
+   These tags are INFORMATIONAL. A conforming Verifier MUST NOT base
+   trust decisions on Section 6.4 metadata alone; for X.509-bearing
+   key formats the authoritative validity period is taken from the
+   certificate itself, and TLV metadata is at most a hint.
+
+
+-------------------------------------------------------------------------------
+7. Signature Partition (PCFSIG_SIG)
+-------------------------------------------------------------------------------
+
+   The data of a PCFSIG_SIG partition is exactly one Manifest followed
+   by one signature object. The partition's used_bytes equals the total
+   length; its PCF data_hash covers the whole record (PCF Section 8.3).
+
+   Layout summary:
+
+      +-------------------------+
+      |       Manifest          |  Section 7.1
+      +-------------------------+
+      |   sig_length (u32 LE)   |
+      +-------------------------+
+      |   sig_bytes (sig_length)|  raw output of the signing algorithm
+      +-------------------------+
+      |  trailer_length (u32 LE)|
+      +-------------------------+
+      | trailer_bytes (var.)    |  v1.0: trailer_length MUST be 0
+      +-------------------------+
+
+7.1  Manifest Layout
+
+   The Manifest is the byte sequence that is hashed and signed. Its
+   length is computed deterministically from the number of signed
+   entries: 60 + 218 * signed_count bytes.
+
+      Offset  Size  Type   Field
+      ------  ----  -----  --------------------------------------------------
+        0      8    bytes  manifest_magic  = "PCFSIG\0\0"
+                                           = 50 43 46 53 49 47 00 00
+        8      2    u16    manifest_version_major  = 1
+       10      2    u16    manifest_version_minor  = 0
+       12      1    u8     sig_algo_id            (Section 8)
+       13      1    u8     manifest_hash_algo_id  (Section 9; MUST be
+                                                   cryptographic)
+       14      2    u16    flags                  (v1.0: MUST be 0)
+       16     32    bytes  signer_key_fingerprint (Section 6.3)
+       48      8    i64    signed_at_unix_seconds (0 = unspecified)
+       56      4    u32    signed_count           (number of SignedEntry's)
+       60   N*218  bytes   signed_entries[]       (N = signed_count)
+      ------  ----  -----  --------------------------------------------------
+      length = 60 + 218 * signed_count
+
+   manifest_magic
+      MUST be the eight bytes "PCFSIG\0\0". A Reader MUST treat a
+      PCFSIG_SIG partition whose data does not begin with this magic
+      as malformed.
+
+   manifest_version_major, manifest_version_minor
+      Version of the Manifest schema. This document defines major 1,
+      minor 0. The same major-rejection / higher-minor-acceptance rule
+      as in Section 6.1 applies.
+
+   sig_algo_id
+      One byte naming the signature algorithm (Section 8). MUST NOT be
+      0 in a live signature partition.
+
+   manifest_hash_algo_id
+      One byte naming the hash applied to the Manifest before signing,
+      for algorithms that require explicit pre-hashing (or for the
+      Verifier's signature input). MUST be a cryptographic identifier
+      from the PCF Hash Algorithm Registry: 16 (SHA-256), 17
+      (SHA-512), or 18 (BLAKE3). For Ed25519 (sig_algo_id = 1), which
+      hashes its message internally, this field still names the hash
+      that a Verifier MUST recompute if it independently validates the
+      manifest digest; it MUST be SHA-512 (id 17) for Ed25519 to
+      reflect the algorithm's intrinsic hash. For ECDSA, RSA-PSS, and
+      RSA-PKCS1v15, manifest_hash_algo_id MUST match the hash bound in
+      the algorithm identifier (Section 8).
+
+   flags
+      Reserved for future use. v1.0 Writers MUST write 0; v1.0
+      Verifiers MUST reject a manifest with non-zero flags. A future
+      minor version MAY assign meaning to specific bits.
+
+   signer_key_fingerprint
+      The 32-byte SHA-256 fingerprint (Section 6.3) of the PCFSIG_KEY
+      partition that produced this signature. A Verifier locates the
+      key by this fingerprint; failure to find a matching PCFSIG_KEY
+      partition is a verification failure, but is NOT a malformed-file
+      condition (a PCF-SIG file MAY carry an "orphan" signature whose
+      key resides elsewhere; verification simply cannot proceed).
+
+   signed_at_unix_seconds
+      Signed-statement timestamp, in seconds since the Unix epoch
+      (1970-01-01 00:00:00 UTC). MAY be 0 to mean "unspecified". This
+      value is part of the signed bytes and therefore cannot be
+      changed without invalidating the signature; it is a
+      self-asserted claim by the Signer, not a trusted timestamp.
+
+   signed_count
+      Number of SignedEntry records that follow. MUST be at least 1; a
+      manifest with zero entries is malformed.
+
+   signed_entries
+      An array of SignedEntry records (Section 7.2), packed with no
+      gaps, in any order the Writer chooses. A Verifier MUST treat
+      duplicate uids within one manifest as malformed.
+
+7.2  Signed Entry
+
+   Each SignedEntry is a fixed 218-byte record describing exactly one
+   covered partition.
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0     16    bytes  uid                (PCF uid, MUST be non-NIL)
+       16      4    u32    partition_type     (PCF type, MUST be non-reserved)
+       20     32    bytes  label              (PCF label, copied verbatim)
+       52      8    u64    used_bytes         (PCF used_bytes)
+       60      1    u8     data_hash_algo_id  (PCF Section 8.1; MUST be 16,
+                                               17, or 18)
+       61      1    u8     reserved           (MUST be 0)
+       62     64    bytes  data_hash          (PCF data_hash field bytes)
+      126     92    bytes  reserved           (MUST be 0)
+      ------  ----  -----  --------------------------------------------------
+      total: 218 bytes
+
+   uid
+      The 16-byte PCF uid of the covered partition, copied verbatim
+      from its PCF Partition Entry. MUST NOT be the NIL UID. A
+      SignedEntry MUST NOT reference the PCFSIG_SIG partition that
+      carries this manifest (a signature MUST NOT sign itself);
+      Writers and Verifiers MUST reject such self-references.
+
+   partition_type
+      The covered partition's PCF type, copied verbatim. MUST NOT be
+      0x00000000 (which is PCF-reserved).
+
+   label
+      The covered partition's PCF label, copied verbatim from the
+      32-byte field. The same byte rules as PCF Section 10 apply to
+      the bytes; the manifest does not re-validate them, it merely
+      mirrors them.
+
+   used_bytes
+      The covered partition's PCF used_bytes value, copied verbatim.
+      Together with data_hash this commits to the partition's data.
+
+   data_hash_algo_id
+      The covered partition's PCF data_hash_algo_id. A live
+      SignedEntry MUST name a CRYPTOGRAPHIC hash: 16 (SHA-256), 17
+      (SHA-512), or 18 (BLAKE3). Any other value (including 0 = none,
+      1..5 = non-cryptographic) renders the SignedEntry malformed for
+      PCF-SIG purposes (Section 9). Writers MUST refuse to sign such
+      a partition; Verifiers MUST reject such a SignedEntry.
+
+   data_hash
+      All 64 bytes of the covered partition's PCF data_hash field,
+      copied verbatim (left-aligned, zero-padded per PCF Section 8.2).
+
+   reserved
+      The two reserved spans (1 byte at offset 61 and 92 bytes at
+      offset 126) MUST be zero in v1.0 Manifests. A Writer MUST
+      zero-fill them; a v1.0 Verifier MUST reject a SignedEntry that
+      contains non-zero bytes in either reserved span. A future minor
+      version MAY define fields in either span.
+
+   The protected-fields set is exactly {uid, partition_type, label,
+   used_bytes, data_hash_algo_id, data_hash}. Section 7.4 enumerates
+   the corresponding unprotected fields.
+
+7.3  Signature and Trailer
+
+   Immediately after the Manifest's last SignedEntry, the partition
+   continues with:
+
+      Offset (rel)  Size       Type   Field
+      ------------  ---------  -----  ---------------------------------------
+        0            4         u32    sig_length
+        4            sig_len   bytes  sig_bytes
+        4+sig_len    4         u32    trailer_length
+        8+sig_len    trail_len bytes  trailer_bytes
+      ------------  ---------  -----  ---------------------------------------
+
+   sig_length
+      Length in bytes of sig_bytes. MUST be greater than zero and MUST
+      match the natural output length of sig_algo_id (for
+      fixed-length algorithms such as Ed25519 = 64; for variable-
+      length DER-encoded ECDSA and RSA, the actual signature length).
+
+   sig_bytes
+      The raw output of the signing algorithm applied to the
+      Manifest. The exact input convention per algorithm is given in
+      Section 8.
+
+   trailer_length
+      Length in bytes of trailer_bytes. In v1.0, MUST be 0; Verifiers
+      MUST reject a non-zero value. A future minor version MAY use
+      the trailer to carry timestamping tokens, countersignatures, or
+      revocation evidence.
+
+   trailer_bytes
+      Reserved for future use; absent in v1.0.
+
+   The PCF data_hash of the PCFSIG_SIG partition covers all bytes from
+   the manifest magic through the trailer (the entire used region), so
+   the cryptographic signature and the PCF integrity hash protect
+   complementary layers: data_hash detects accidental corruption of
+   the signature blob, sig_bytes attests the Manifest's authenticity.
+
+7.4  Protected vs Unprotected Fields
+
+   For every covered partition, the manifest binds these fields of
+   the PCF Partition Entry:
+
+      Protected (cryptographically authenticated by the signature):
+         uid
+         partition_type
+         label
+         used_bytes
+         data_hash_algo_id
+         data_hash
+
+      Unprotected (a Writer MAY change these without affecting
+      signature validity):
+         start_offset
+         max_length
+         (and, by extension, the partition's position in the Table
+         Block chain and any Table Block's table_hash /
+         next_table_offset)
+
+   The unprotected set is exactly the set of fields needed to describe
+   physical placement. Operations that touch only the unprotected set
+   are referred to as RELOCATIONS in this document; Section 4.2 lists
+   the permitted relocations.
+
+
+-------------------------------------------------------------------------------
+8. Signature Algorithm Registry
+-------------------------------------------------------------------------------
+
+      ID   Algorithm                  sig_bytes encoding
+      ---  -------------------------  ---------------------------------------
+       0   reserved / none            MUST NOT appear in a live signature.
+       1   Ed25519                    Raw 64-byte (R || s), RFC 8032.
+                                      Input: the Manifest bytes verbatim.
+                                      The algorithm internally hashes the
+                                      input with SHA-512;
+                                      manifest_hash_algo_id MUST be 17.
+       2   RSA-PSS-SHA-256            PKCS#1 v2.2 RSASSA-PSS with hash =
+                                      SHA-256, MGF1-SHA-256, salt length =
+                                      32. Raw modulus-length bytes.
+                                      manifest_hash_algo_id MUST be 16.
+       3   RSA-PSS-SHA-384            As above with SHA-384, salt 48.
+                                      manifest_hash_algo_id MUST be 17
+                                      (SHA-512) is NOT permitted;
+                                      this profile binds id 3 to SHA-384,
+                                      and the manifest hash algo MUST also
+                                      be SHA-384. Implementations MAY add
+                                      a SHA-384 entry to the PCF hash
+                                      registry in a future minor version;
+                                      until then, sig_algo_id = 3 is
+                                      reserved-but-unusable in v1.0.
+       4   RSA-PSS-SHA-512            PKCS#1 v2.2 RSASSA-PSS with hash =
+                                      SHA-512, MGF1-SHA-512, salt 64.
+                                      manifest_hash_algo_id MUST be 17.
+       5   RSA-PKCS1v15-SHA-256       PKCS#1 v2.2 RSASSA-PKCS1-v1_5 with
+                                      SHA-256. Legacy interop only.
+                                      manifest_hash_algo_id MUST be 16.
+       6   (reserved)                 RSA-PKCS1v15-SHA-384, reserved
+                                      pending PCF SHA-384 registration.
+       7   RSA-PKCS1v15-SHA-512       PKCS#1 v2.2 RSASSA-PKCS1-v1_5 with
+                                      SHA-512. manifest_hash_algo_id MUST
+                                      be 17.
+      16   ECDSA-P256-SHA-256         FIPS 186-4 ECDSA over P-256 (RFC
+                                      5480 secp256r1). sig_bytes is the
+                                      ASN.1 DER SEQUENCE { r INTEGER, s
+                                      INTEGER } (RFC 3279).
+                                      manifest_hash_algo_id MUST be 16.
+      17   (reserved)                 ECDSA-P384-SHA-384, reserved pending
+                                      PCF SHA-384 registration.
+      18   ECDSA-P521-SHA-512         FIPS 186-4 ECDSA over P-521. DER as
+                                      above. manifest_hash_algo_id MUST
+                                      be 17.
+      32   X.509 chain                The signature uses whichever
+                                      algorithm is named by the leaf
+                                      certificate's SignatureAlgorithm
+                                      field, encoded as that algorithm
+                                      would natively encode it.
+                                      manifest_hash_algo_id MUST match
+                                      the hash bound by the leaf's
+                                      SignatureAlgorithm and MUST be in
+                                      {16, 17}.
+                                      The PCFSIG_KEY referenced by
+                                      signer_key_fingerprint MUST use
+                                      key_format_id = 16 or 17.
+      ---  -------------------------- ---------------------------------------
+
+   IDs 8..15 and 19..31 are reserved for future raw-key algorithms
+   (e.g., post-quantum signatures); IDs 33..127 are reserved for
+   future certificate-bearing algorithms; IDs 128..255 are reserved
+   for application-private algorithms and MUST NOT appear in
+   interoperable files.
+
+   A conforming PCF-SIG implementation MUST support sig_algo_id = 1
+   (Ed25519). All other algorithms are RECOMMENDED for interoperability
+   with existing public-key infrastructure but are OPTIONAL. A Verifier
+   encountering a sig_algo_id it does not implement MUST report the
+   affected signature as unverifiable; it MUST NOT treat the file as
+   malformed on that basis alone (Section 15).
+
+   The signing input for every algorithm in v1.0 is the Manifest bytes
+   exactly as serialised in the partition (offsets 0..60 + 218 *
+   signed_count). The Verifier MUST extract those bytes bit-identically
+   and pass them to the signature primitive.
+
+
+-------------------------------------------------------------------------------
+9. Cryptographic Hash Requirement
+-------------------------------------------------------------------------------
+
+   A cryptographic signature is only meaningful when the integrity
+   hash it transitively commits to is itself cryptographic. PCF's hash
+   registry (PCF Section 8.1) includes CRC-32, CRC-32C, CRC-64, MD5,
+   and SHA-1, which are NOT collision-resistant and MUST NOT be used
+   as the basis for a cryptographic-signature scheme (PCF
+   Section 8.1).
+
+   PCF-SIG therefore REQUIRES that every covered partition use a
+   cryptographic data_hash:
+
+      data_hash_algo_id of each covered partition MUST be one of
+      16 (SHA-256), 17 (SHA-512), 18 (BLAKE3).
+
+   A Writer that attempts to sign a partition whose data_hash_algo_id
+   falls outside this set MUST refuse to produce the signature. A
+   Verifier MUST treat any SignedEntry whose data_hash_algo_id is
+   outside this set as a verification failure for that entry; the
+   signature on the manifest itself MAY still verify, but the entry
+   gives no authentication of the partition.
+
+   manifest_hash_algo_id is restricted to the same cryptographic set
+   (Section 7.1) and is further constrained per algorithm by Section 8.
+
+
+-------------------------------------------------------------------------------
+10. Signing Procedure
+-------------------------------------------------------------------------------
+
+   To produce a PCFSIG_SIG partition over a chosen set of partitions
+   {P_0, ..., P_{n-1}} with private key K:
+
+      G1.  For every P_i, assert that P_i.data_hash_algo_id is in
+           {16, 17, 18}. Otherwise: abort.
+
+      G2.  Compute or read the fingerprint F of K's public component
+           (Section 6.3). If no PCFSIG_KEY partition with this
+           fingerprint exists in the file, write one (Section 6). A
+           Writer MAY also write key partitions ahead of time.
+
+      G3.  Build the Manifest in memory, in the order:
+
+              manifest_magic,
+              manifest_version_major, manifest_version_minor,
+              sig_algo_id, manifest_hash_algo_id, flags = 0,
+              signer_key_fingerprint = F,
+              signed_at_unix_seconds,
+              signed_count = n,
+              for i in 0..n: SignedEntry copy of P_i
+                              (uid, partition_type, label,
+                               used_bytes, data_hash_algo_id,
+                               data_hash) with reserved spans = 0.
+
+           The SignedEntry order is a Writer choice; a Writer SHOULD
+           emit entries in ascending uid byte order for canonical
+           reproducibility, but the order is not normative.
+
+      G4.  Serialise the Manifest to its byte form M (length 60 + 218n).
+
+      G5.  Compute sig_bytes = SIGN(sig_algo_id, K, M), exactly per
+           the algorithm's standard convention (Section 8).
+
+      G6.  Compose the partition data D = M || u32(sig_length) ||
+           sig_bytes || u32(0) (trailer_length = 0).
+
+      G7.  Add D as a new PCF partition with type 0xAAAB0002, a fresh
+           PCF uid, a label of the Writer's choice (RECOMMENDED:
+           "pcfsig"), and a cryptographic data_hash_algo_id (16, 17,
+           or 18). The partition's PCF data_hash protects D under the
+           normal PCF cascade (PCF Section 8.5).
+
+   A Writer MAY produce several signatures over overlapping sets, in
+   any order, each becoming its own PCFSIG_SIG partition with a fresh
+   uid.
+
+
+-------------------------------------------------------------------------------
+11. Verification Procedure
+-------------------------------------------------------------------------------
+
+   A Verifier processes each PCFSIG_SIG partition independently:
+
+      V1.  Locate every partition of type 0xAAAB0002 in the file. For
+           each such partition S, read its used data D (V1 itself
+           assumes PCF data_hash of S verifies; PCF Section 8.3).
+
+      V2.  Parse the Manifest M from the head of D:
+              - Confirm manifest_magic == "PCFSIG\0\0".
+              - Confirm manifest_version_major == 1 (reject otherwise).
+              - Confirm sig_algo_id != 0 and is in the registry of
+                algorithms this Verifier supports (otherwise report
+                "unverifiable" and continue with the next signature).
+              - Confirm manifest_hash_algo_id is in {16, 17, 18} and
+                matches the algorithm's binding (Section 8).
+              - Confirm flags == 0.
+              - Confirm signed_count >= 1.
+              - Compute the manifest byte length: 60 + 218 *
+                signed_count.
+
+      V3.  Parse the post-Manifest fields:
+              - Read sig_length (u32 LE) and the next sig_length
+                bytes as sig_bytes.
+              - Read trailer_length (u32 LE); MUST be 0 in v1.0.
+              - Reject if S.used_bytes != manifest_len + 4 +
+                sig_length + 4.
+
+      V4.  Locate the PCFSIG_KEY partition whose fingerprint equals
+           M.signer_key_fingerprint:
+              - Scan all partitions of type 0xAAAB0001 in the file.
+              - For each, recompute SHA-256(key_data) and compare to
+                its stored fingerprint and to M's fingerprint.
+              - If none matches: report this signature as
+                "unverifiable: signing key not in file" and continue.
+
+      V5.  Construct the verification public key from the located
+           PCFSIG_KEY partition:
+              - For key_format_id 1..3: use key_data directly.
+              - For key_format_id 16: parse the X.509 certificate
+                from key_data; the certificate's
+                SubjectPublicKeyInfo is the verification key.
+              - For key_format_id 17: parse the leaf (first)
+                certificate from the length-prefixed chain; verify
+                the chain's internal signatures up to its root with
+                whatever trust anchors are in effect for this
+                Verifier; the leaf's SubjectPublicKeyInfo is the
+                verification key. Trust-anchor management is OUT OF
+                SCOPE for this profile.
+
+      V6.  Run the algorithm-specific signature verification:
+
+              VERIFY(sig_algo_id, public_key, M, sig_bytes) -> bool.
+
+           If false, report this signature as "invalid" and continue.
+
+      V7.  For every SignedEntry e in M:
+              - Reject the manifest if uid is the NIL UID, if
+                partition_type is 0x00000000, or if either reserved
+                span is non-zero.
+              - Reject the manifest if any uid appears more than
+                once.
+              - Reject the manifest if any SignedEntry's uid equals
+                S's own PCF uid (no self-reference).
+              - Locate the live partition P with uid = e.uid in the
+                file. If none exists, report "missing partition" for
+                this entry.
+              - If P exists, confirm field-for-field:
+                    P.partition_type   == e.partition_type
+                    P.label            == e.label
+                    P.used_bytes       == e.used_bytes
+                    P.data_hash_algo_id == e.data_hash_algo_id
+                    P.data_hash        == e.data_hash
+                Any mismatch is a per-entry verification failure for
+                e; the signature on the manifest itself MAY still be
+                cryptographically valid.
+              - Confirm e.data_hash_algo_id is in {16, 17, 18}.
+              - OPTIONALLY recompute the digest of P's used bytes
+                with e.data_hash_algo_id and confirm it matches
+                e.data_hash. A Verifier that wants
+                tampering-resistant guarantees beyond PCF's own
+                data_hash cascade MUST perform this check (PCF
+                guarantees the cascade but not a separate digest of
+                file bytes after some modification scenarios such as
+                a malicious in-place update accompanied by a
+                consistent data_hash overwrite; PCF-SIG is precisely
+                the layer that detects such overwrites because the
+                manifest commits to the data_hash).
+
+      V8.  Report, per signature partition: {signer_key_fingerprint,
+           signed_at_unix_seconds, manifest_verdict (valid /
+           invalid / unverifiable), per-entry results, signing
+           algorithm, key format, optional metadata from PCFSIG_KEY}.
+
+   Verification is a read-only operation. A Verifier MUST NOT modify
+   the file under any circumstances and MUST NOT trust unsigned
+   partitions on the basis of signed ones.
+
+
+-------------------------------------------------------------------------------
+12. Multi-Signer Semantics
+-------------------------------------------------------------------------------
+
+   When a file carries multiple PCFSIG_SIG partitions, each represents
+   one independent assertion. The Verifier produces N independent
+   reports, one per signature partition. Composing those reports into
+   an application-level trust decision is the application's
+   responsibility; the profile does not define an aggregate "the file
+   is signed" verdict.
+
+   Common compositions (informative):
+
+      - INTERSECTION of coverage. The set of partitions cryptograph-
+        ically attested by every required signer is the intersection
+        of their per-signature uid sets. Useful for M-of-N policies.
+
+      - UNION of coverage. The set of partitions attested by AT
+        LEAST one trusted signer is the union of their per-signature
+        uid sets. Useful for "any of these auditors signed it".
+
+      - ROLE-RESTRICTED. A signature is considered "release"
+        evidence only if signer_key_fingerprint is on the release
+        key list, "audit" only if on the audit list, and so on.
+
+   None of these compositions changes the on-file representation.
+   They are pure post-processing on the per-signature report
+   produced by Section 11.
+
+   A signature MAY cover another signature partition (one signer
+   countersigning another's manifest by including its uid as a
+   SignedEntry). This binds the countersignature to the exact
+   manifest bytes of the inner signature, including its sig_bytes,
+   because the inner signature is part of the inner partition's
+   used data and therefore of its data_hash. The semantics of
+   countersignatures (timestamping, notarisation) are an application
+   layer; the profile merely supports the pattern.
+
+
+-------------------------------------------------------------------------------
+13. Reader Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+13.1 Open and index
+
+      open the file as a PCF reader (PCF 11.1)
+      keys = { fingerprint -> (key_format_id, key_data, metadata) }
+      sigs = []                              // list of PCFSIG_SIG entries
+      for each PCF Partition Entry P:
+          if P.type == 0xAAAB0001:           // PCFSIG_KEY
+              parse Key Record; verify fingerprint matches SHA-256(key_data)
+              keys[fingerprint] = parsed record
+          elif P.type == 0xAAAB0002:         // PCFSIG_SIG
+              sigs.append(P)
+
+13.2 Verify one signature
+
+      D = read_partition_data(P)
+      M = parse manifest from D[0 .. 60 + 218 * signed_count)
+      sig_length = u32_le(D, manifest_end)
+      sig_bytes  = D[manifest_end+4 .. manifest_end+4+sig_length]
+      trailer_length = u32_le(D, manifest_end+4+sig_length)
+      require trailer_length == 0 in v1.0
+
+      key = keys.get(M.signer_key_fingerprint)
+      if key is None:
+          return Unverifiable(reason = "no matching PCFSIG_KEY")
+
+      pub = extract_public_key(key)
+      ok  = verify_alg(M.sig_algo_id, pub, M_bytes, sig_bytes)
+      if not ok:
+          return Invalid
+
+      per_entry = []
+      for e in M.signed_entries:
+          p = find_entry_by_uid(e.uid)
+          if p is None: per_entry.append((e.uid, "missing")); continue
+          if p.partition_type != e.partition_type or
+             p.label != e.label or
+             p.used_bytes != e.used_bytes or
+             p.data_hash_algo_id != e.data_hash_algo_id or
+             p.data_hash != e.data_hash:
+              per_entry.append((e.uid, "mismatch"))
+              continue
+          if e.data_hash_algo_id not in {16, 17, 18}:
+              per_entry.append((e.uid, "weak hash"))
+              continue
+          per_entry.append((e.uid, "valid"))
+      return Valid(per_entry)
+
+13.3 Aggregate
+
+      for each signature in sigs:
+          report verify_one(signature)
+      apply application trust policy to the per-signature reports
+
+
+-------------------------------------------------------------------------------
+14. Writer Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+14.1 Prepare key partition (once per key)
+
+      pub  = public_key_bytes(key_or_cert)
+      fp   = SHA-256(pub)                  // SHA-256(key_data) per 6.3
+      if fingerprint fp not in this PCF file:
+          add a new partition of type 0xAAAB0001 whose data is the
+          Key Record (Section 6) with key_data = pub, the matching
+          key_format_id, and any desired metadata TLV entries
+
+14.2 Sign a set of partition uids
+
+      S = [partition uids to cover]
+      require every uid in S names a partition with data_hash_algo_id
+          in {16, 17, 18}; otherwise abort
+      manifest = build_manifest(sig_algo_id, manifest_hash_algo_id,
+                                fingerprint, now_unix_seconds, S)
+      M_bytes  = serialize(manifest)
+      sig      = sign(sig_algo_id, private_key, M_bytes)
+      data     = M_bytes || u32(len(sig)) || sig || u32(0)
+      add a new partition of type 0xAAAB0002 with data = data, a
+          fresh PCF uid, and a cryptographic data_hash_algo_id
+
+14.3 Relocate / compact without re-signing
+
+      run any PCF-defined relocation: in-place data update of an
+          UNSIGNED partition, full PCF compaction (PCF 11.5), Table
+          Block chain re-link, etc.
+      do NOT touch sig_bytes or the Manifest bytes; the partition's
+          PCF uid, type, label, used_bytes, data_hash_algo_id, and
+          data_hash do not change under relocation
+      existing PCFSIG_SIG signatures remain valid because all
+          relocations leave the protected fields unchanged
+          (Section 7.4, Section 4.2)
+
+
+-------------------------------------------------------------------------------
+15. Conformance and Validation
+-------------------------------------------------------------------------------
+
+   A conforming PCF-SIG Reader MUST:
+
+      R1.  Be a conforming PCF Reader (PCF Section 12, C1..C8).
+      R2.  Recognise PCFSIG_KEY (0xAAAB0001) and PCFSIG_SIG
+           (0xAAAB0002) partitions and parse their fixed prefixes
+           field-for-field (Sections 6.1, 7.1).
+      R3.  Treat as malformed any PCFSIG_KEY whose record_magic is
+           not "PCFKEY\0\0", whose record_version_major is not 1,
+           whose key_format_id is 0, whose key_data_length is 0,
+           whose recomputed SHA-256(key_data) does not equal its
+           stored fingerprint, or whose reserved bytes (offsets
+           13..15) are non-zero in v1.0.
+      R4.  Treat as malformed any PCFSIG_SIG whose manifest_magic is
+           not "PCFSIG\0\0", whose manifest_version_major is not 1,
+           whose sig_algo_id is 0, whose manifest_hash_algo_id is not
+           in {16, 17, 18} or does not match the binding required by
+           the chosen sig_algo_id, whose flags are non-zero, whose
+           signed_count is 0, whose trailer_length is non-zero, whose
+           SignedEntry reserved spans are non-zero, whose
+           used_bytes does not equal 60 + 218 * signed_count + 8 +
+           sig_length + trailer_length, or whose SignedEntry's
+           data_hash_algo_id is not in {16, 17, 18}.
+      R5.  Reject any Manifest containing the NIL UID or PCF-reserved
+           type 0x00000000 in a SignedEntry, any duplicate uid within
+           one Manifest, or a SignedEntry whose uid equals the
+           enclosing PCFSIG_SIG partition's own uid.
+      R6.  Locate the signing key by recomputing SHA-256(key_data)
+           over each PCFSIG_KEY partition; do not rely on the stored
+           fingerprint field alone (R3 mandates the cross-check).
+      R7.  Verify the signature against the bytes of the Manifest as
+           extracted from the partition, not against any locally
+           re-serialised representation.
+      R8.  Report per-entry verification results: an entry whose
+           target partition is missing, or whose protected fields
+           diverge from the Manifest, or whose data_hash_algo_id is
+           not cryptographic, is a per-entry failure even when the
+           Manifest's signature itself verifies.
+      R9.  Treat an unsupported sig_algo_id, an unsupported
+           key_format_id, or a missing PCFSIG_KEY as
+           UNVERIFIABLE, not as MALFORMED.
+
+   A conforming PCF-SIG Writer MUST:
+
+      W1.  Be a conforming PCF Writer (PCF Section 12, W1..W5).
+      W2.  Refuse to sign any partition whose data_hash_algo_id is
+           not in {16, 17, 18} (Section 9).
+      W3.  Write at most one PCFSIG_KEY per distinct fingerprint in
+           a file. Recompute the fingerprint at write time and
+           verify it equals SHA-256(key_data) before committing.
+      W4.  Produce a Manifest whose sig_algo_id and
+           manifest_hash_algo_id satisfy the binding in Section 8,
+           whose signed_count > 0, whose reserved spans are
+           zero-filled, and whose SignedEntries are free of
+           duplicates and self-reference (Section 7.2).
+      W5.  Compute sig_bytes over the exact bytes of the serialised
+           Manifest; do not include the post-Manifest length field,
+           the signature itself, or the trailer in the signing
+           input.
+      W6.  Keep the cryptographic signature and the PCF data_hash of
+           the PCFSIG_SIG partition consistent: after composing the
+           partition data (manifest || sig || trailer), compute its
+           PCF data_hash exactly as for any other partition.
+      W7.  Choose, when interoperability with other PCF-SIG
+           implementations matters, a sig_algo_id from the MUST-
+           support set ({1}) or the RECOMMENDED set (Section 8).
+
+   The format TRUSTS the Writer for physical layout. A PCF-SIG
+   Reader is NOT required to validate that PCFSIG_KEY and PCFSIG_SIG
+   partitions reside in any particular order or block; such a file
+   is not, by those facts alone, non-conforming.
+
+
+-------------------------------------------------------------------------------
+16. Versioning
+-------------------------------------------------------------------------------
+
+   PCF-SIG carries its own profile version in every PCFSIG_KEY
+   record (record_version_major, record_version_minor) and in every
+   PCFSIG_SIG Manifest (manifest_version_major,
+   manifest_version_minor), independent of the PCF container version
+   (which remains 1.0).
+
+      A profile MAJOR change denotes an incompatible change to a
+      record layout or to the semantics of signing or verification.
+      A Reader MUST reject a record whose major it does not
+      implement.
+
+      A profile MINOR change denotes a backward-compatible addition
+      that does not alter any existing record byte layout -- for
+      example, registering a new signature algorithm id (Section 8),
+      defining a previously reserved flag bit, or assigning meaning
+      to one of the reserved spans (Sections 6.1, 7.2). A Reader
+      implementing major M MUST accept records with the same M and
+      an equal or lower minor; it SHOULD accept a higher minor,
+      ignoring fields it does not understand.
+
+   This document defines profile version 1.0.
+
+
+-------------------------------------------------------------------------------
+17. Future Considerations (Informative)
+-------------------------------------------------------------------------------
+
+   Revocation. A future minor version MAY define a third partition
+   type (RECOMMENDED 0xAAAB0003, PCFSIG_REVOKE) listing fingerprints
+   of revoked PCFSIG_KEY partitions, signed by a designated
+   revocation authority. Verifiers consult the revocation set before
+   accepting a signature.
+
+   Timestamping. The reserved trailer_bytes region (Section 7.3) is
+   intended to carry RFC 3161 TSA tokens or an analogous proof of
+   when sig_bytes existed, without changing manifest layout. The
+   trailer_length field is already provisioned for this.
+
+   Additional algorithms. Post-quantum signature schemes (e.g.,
+   Dilithium, SPHINCS+) can be added by registering new sig_algo_id
+   values and matching key_format_id values without changing any
+   existing layout. SHA-384 hash registry registration (a PCF
+   minor-version change) is the prerequisite for activating the
+   currently-reserved SHA-384-bound algorithm ids.
+
+   Countersignatures. Section 12 sketches how an outer signature
+   binds to an inner signature's exact bytes by including the inner
+   signature partition's uid as a SignedEntry. A dedicated trailer
+   tag MAY later carry a self-contained countersignature inside the
+   inner partition to keep verification local.
+
+   Encryption. Confidentiality is an orthogonal concern; PCF-SIG
+   does not specify any encrypted partition kind. A future profile
+   MAY add one, layered above PCF-SIG so that a partition can be
+   both encrypted and signed.
+
+
+-------------------------------------------------------------------------------
+18. Assumptions and Design Decisions (Informative)
+-------------------------------------------------------------------------------
+
+   B1.  The profile changes nothing in PCF. It uses two application
+        type values (0xAAAB0001, 0xAAAB0002) from a reserved range,
+        all permitted by PCF Section 7.
+
+   B2.  Signature partitions are first-class PCF partitions: their
+        bytes are PCF-protected by data_hash, their identity is a
+        PCF uid, and their relationships to data partitions are
+        expressed by uid references inside the Manifest. The
+        cryptographic signature is one layer above the PCF cascade,
+        not a replacement for it.
+
+   B3.  Keys are deduplicated by fingerprint (Section 4.3). One
+        PCFSIG_KEY partition can serve any number of signatures by
+        the same signer in the same file; this matches the typical
+        case where one author signs many partitions.
+
+   B4.  A Manifest enumerates covered partitions by uid + protected
+        fields (Section 7.4). It does NOT name file offsets or
+        Table Block positions, so PCF compaction and any other
+        relocation leave existing signatures valid as long as
+        partition contents do not change. Relocation stability is
+        the central property and is the reason PCF-SIG carries
+        bigger per-entry records (218 B) than strictly required.
+
+   B5.  Cryptographic data_hash is mandatory for covered partitions
+        (Section 9). PCF's permissive hash registry is preserved at
+        the container level; PCF-SIG narrows the acceptable set
+        only for partitions it signs.
+
+   B6.  One signature equals one partition. Multi-signer support is
+        achieved by writing more PCFSIG_SIG partitions, each with
+        its own Manifest. Aggregation policy is left to the
+        application (Section 12).
+
+   B7.  The Manifest is byte-canonical: a fixed prefix plus a
+        fixed-size SignedEntry array. There is no extension TLV in
+        the Manifest itself in v1.0; future fields will land in
+        either a reserved span or a new minor-version SignedEntry
+        slot, never in a variable-length inline append.
+
+   B8.  Reserved spans (3 bytes in the Key Record header, 1 byte
+        and 92 bytes in SignedEntry) are aggressively zero-checked
+        in v1.0 so that future bit assignments cannot be ambiguous
+        with legacy zero-fill.
+
+   B9.  Ed25519 is the MUST-support baseline because it has the
+        smallest implementation footprint, the smallest signature
+        size, no parameter choices, and no per-signature
+        randomness. RSA and ECDSA support is RECOMMENDED for PKI
+        interoperability; X.509 chains let the profile slot into
+        existing trust infrastructure without inventing one.
+
+   B10. PCF-SIG does not define a trust model. Whether a given
+        public key is "trusted" is an application question; the
+        profile reports per-signature, per-entry cryptographic
+        facts and lets the application combine them with its own
+        trust policy (Section 12).
+
+   B11. The 8-byte signature length field after the Manifest is
+        u32 (4 bytes) and is REPEATED for the trailer for
+        regularity; this lets a Verifier parse the post-Manifest
+        region in one forward sweep without needing to know in
+        advance how long sig_bytes is.
+
+   B12. A signature MUST NOT cover its own PCFSIG_SIG partition
+        (Section 7.2). Self-reference is mathematically vacuous
+        because computing the signature would change the data_hash
+        that the SignedEntry would have to commit to, leaving no
+        fixed point.
+
+
+-------------------------------------------------------------------------------
+19. Test Vectors
+-------------------------------------------------------------------------------
+
+   The following narrative example exercises the model end to end.
+   Exact offsets and hash values are produced by the reference
+   implementation (`reference/PCF-SIG-v1.0/examples/gen_testvector.rs`)
+   and are pinned in the implementation's `testdata/` directory and in
+   the reference README so that independent implementations can
+   verify byte-exact conformance.
+
+   Canonical vector:
+      Container: PCF v1.0 with three partitions, in compacted form.
+
+      Partition "alpha" (signed):
+         type            = 0x00000010
+         uid             = 16 x 0x11
+         data            = "Hello, PCF-SIG!" (15 bytes)
+         data_hash_algo  = SHA-256 (id 16)
+
+      Partition "key" (PCFSIG_KEY, signing key for the next partition):
+         type            = 0xAAAB0001
+         uid             = 16 x 0x22
+         data            = Key Record:
+                              record_magic     = "PCFKEY\0\0"
+                              record_version   = 1.0
+                              key_format_id    = 1 (Ed25519 raw)
+                              reserved         = 00 00 00
+                              fingerprint      = SHA-256(public_key_bytes)
+                              key_data_length  = 32
+                              key_data         = public_key_bytes
+                              (no metadata TLV)
+         The Ed25519 keypair is generated deterministically from a
+         fixed 32-byte seed of 0x00..0x1F.
+         data_hash_algo  = SHA-256
+
+      Partition "sig" (PCFSIG_SIG, signs "alpha"):
+         type            = 0xAAAB0002
+         uid             = 16 x 0x33
+         data            = Manifest || u32(64) || sig_bytes || u32(0)
+                           Manifest fields:
+                              manifest_magic           = "PCFSIG\0\0"
+                              manifest_version         = 1.0
+                              sig_algo_id              = 1 (Ed25519)
+                              manifest_hash_algo_id    = 17 (SHA-512)
+                              flags                    = 0
+                              signer_key_fingerprint   = key's fingerprint
+                              signed_at_unix_seconds   = 0
+                              signed_count             = 1
+                              signed_entries[0]:
+                                 uid                = 16 x 0x11
+                                 partition_type     = 0x00000010
+                                 label              = "alpha" || zeros
+                                 used_bytes         = 15
+                                 data_hash_algo_id  = 16
+                                 reserved (1 B)     = 00
+                                 data_hash          = SHA-256("Hello, PCF-SIG!")
+                                                      (left-aligned, 64-B field)
+                                 reserved (92 B)    = zeros
+                           sig_bytes = Ed25519_sign(priv, manifest_bytes)
+         data_hash_algo  = SHA-256
+
+   The reference implementation's gen_testvector example produces a
+   complete byte image of the above container in canonical (compacted)
+   PCF form and emits its SHA-256 in stderr so that ports can pin the
+   identical bytes.
+
+   A multi-signer vector and a relocation-equivalence vector are
+   provided as integration tests in
+   `reference/PCF-SIG-v1.0/tests/multi_signer.rs` and
+   `tests/relocation.rs` respectively; their construction follows the
+   same convention.
+
+
+-------------------------------------------------------------------------------
+Appendix A. Field Layout Summary
+-------------------------------------------------------------------------------
+
+   Key Record (PCF type 0xAAAB0001) -- partition data
+      0    8  bytes  record_magic   = "PCFKEY\0\0" (50 43 46 4B 45 59 00 00)
+      8    2  u16    record_version_major = 1
+     10    2  u16    record_version_minor = 0
+     12    1  u8     key_format_id          (1, 2, 3, 16, 17 in v1.0)
+     13    3  bytes  reserved               (= 0)
+     16   32  bytes  fingerprint            (SHA-256 of key_data)
+     48    4  u32    key_data_length
+     52    N  bytes  key_data
+     52+N ...        optional_metadata TLV stream
+
+   Metadata TLV entry (in optional_metadata)
+      0    2  u16    tag
+      2    4  u32    length
+      6    L  bytes  value
+
+   Signature Partition (PCF type 0xAAAB0002) -- partition data
+      Manifest (60 + 218 * N bytes):
+        0    8  bytes  manifest_magic = "PCFSIG\0\0"
+                                       = 50 43 46 53 49 47 00 00
+        8    2  u16    manifest_version_major = 1
+       10    2  u16    manifest_version_minor = 0
+       12    1  u8     sig_algo_id
+       13    1  u8     manifest_hash_algo_id    (16, 17, or 18)
+       14    2  u16    flags                    (= 0)
+       16   32  bytes  signer_key_fingerprint
+       48    8  i64    signed_at_unix_seconds
+       56    4  u32    signed_count             (= N)
+       60  ... bytes   signed_entries[]         (N * 218 bytes)
+      Then (variable-length tail):
+        +0    4  u32    sig_length
+        +4    L  bytes  sig_bytes                (L = sig_length)
+       +4+L   4  u32    trailer_length           (= 0 in v1.0)
+       +8+L   T  bytes  trailer_bytes            (T = trailer_length)
+
+   Signed Entry (218 bytes, packed inside Manifest)
+      0   16  bytes  uid                       (PCF uid; non-NIL)
+     16    4  u32    partition_type            (PCF type; != 0)
+     20   32  bytes  label                     (PCF label, verbatim)
+     52    8  u64    used_bytes
+     60    1  u8     data_hash_algo_id         (16, 17, or 18)
+     61    1  u8     reserved                  (= 0)
+     62   64  bytes  data_hash                 (PCF data_hash field bytes)
+    126   92  bytes  reserved                  (= 0)
+
+   Container facilities used unchanged from PCF
+      File Header (20 B)        magic, version 1.0, partition_table_offset
+      Table Block Header (74 B) partition_count, next_table_offset, table_hash
+      Partition Entry (141 B)   type, uid, label, start_offset, max_length,
+                                used_bytes, data_hash
+
+
+-------------------------------------------------------------------------------
+Appendix B. Type and Constant Registry
+-------------------------------------------------------------------------------
+
+   PCF partition types used by PCF-SIG
+      0xAAAB0001  PCFSIG_KEY
+      0xAAAB0002  PCFSIG_SIG
+      0xAAAB0003..0xAAAB00FF   reserved for future PCF-SIG extensions
+
+   Record magics
+      "PCFKEY\0\0" = 50 43 46 4B 45 59 00 00   (PCFSIG_KEY)
+      "PCFSIG\0\0" = 50 43 46 53 49 47 00 00   (PCFSIG_SIG manifest)
+
+   key_format_id
+       0  reserved
+       1  Ed25519 raw                  ( 32 B public key)
+       2  RSA SPKI DER                 (variable-length)
+       3  ECDSA SPKI DER               (variable-length, P-256/384/521)
+      16  X.509 certificate (DER)      (single leaf)
+      17  X.509 certificate chain      (length-prefixed leaf-first)
+
+   sig_algo_id
+       0  reserved
+       1  Ed25519                                     [MUST support]
+       2  RSA-PSS-SHA-256                             [recommended]
+       3  RSA-PSS-SHA-384                             [reserved in v1.0]
+       4  RSA-PSS-SHA-512                             [recommended]
+       5  RSA-PKCS1v15-SHA-256                        [legacy interop]
+       6  RSA-PKCS1v15-SHA-384                        [reserved in v1.0]
+       7  RSA-PKCS1v15-SHA-512                        [legacy interop]
+      16  ECDSA-P256-SHA-256                          [recommended]
+      17  ECDSA-P384-SHA-384                          [reserved in v1.0]
+      18  ECDSA-P521-SHA-512                          [recommended]
+      32  X.509 chain (algorithm from leaf cert)      [recommended]
+
+   manifest_hash_algo_id values (subset of PCF Hash Registry)
+      16  SHA-256        17  SHA-512        18  BLAKE3
+
+   Metadata TLV tags
+      0x0000  reserved
+      0x0001  Subject DN (UTF-8 text)
+      0x0002  Not-Before (i64 LE Unix seconds)
+      0x0003  Not-After  (i64 LE Unix seconds)
+      0x0004  Issuer DN (UTF-8 text)
+      0x0005  Free-form comment (UTF-8 text)
+      0x8000..0xFFFF  application-private
+
+   Limits
+      signed_count                       >= 1   (>= 1 SignedEntry per Manifest)
+      Manifest length                    = 60 + 218 * signed_count bytes
+      trailer_length (v1.0)              = 0
+      One PCFSIG_KEY per distinct fingerprint per file (Writer rule)
+
+   Profile version  major 1, minor 0   (PCF container version: 1.0)
+
+===============================================================================
+                      End of PCF-SIG Specification v1.0
+===============================================================================
