@@ -61,11 +61,10 @@ fn run(args: Args) -> Result<(), CompactError> {
     if !args.quiet {
         let new_len = compacted.len() as u64;
         let saved = input_len.saturating_sub(new_len);
-        let pct = if input_len == 0 {
-            0
-        } else {
-            (saved * 100) / input_len
-        };
+        let pct = saved
+            .checked_mul(100)
+            .and_then(|n| n.checked_div(input_len))
+            .unwrap_or(0);
         eprintln!(
             "Compacted {}: {} -> {} (saved {}, {}%)",
             args.file.display(),
