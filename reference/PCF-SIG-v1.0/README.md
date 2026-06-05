@@ -75,6 +75,62 @@ for report in verify_all_with_recheck(&mut c)? {
 # Ok::<(), pcf_sig::Error>(())
 ```
 
+## Trust patterns
+
+The profile defines two non-X.509 ways for an application to express trust;
+both are described in spec Section 12.
+
+**Pattern A — self-binding key attestations.** Carry a JWT, SCITT statement,
+or custom signed envelope as an application-private TLV entry (tag range
+`0x8000..0xFFFF`) inside the `PCFSIG_KEY` partition (Section 6.4). The
+attestation MUST internally commit to the key's SHA-256 fingerprint (e.g.
+JWT `cnf.jkt`); otherwise the binding is meaningless because the fingerprint
+covers only `key_data`, not the TLV. The application verifies the
+attestation independently of PCF-SIG.
+
+**Pattern B — key endorsement via countersignature.** A "CA" emits a
+`PCFSIG_SIG` partition whose manifest covers the leaf signer's `PCFSIG_KEY`
+partition by uid. Verifiers report it like any other signature; the
+application checks whether any trusted CA fingerprint endorses the leaf key.
+
+```rust
+use pcf_sig::{key_endorsements, verify_all_with_recheck};
+
+let reports = verify_all_with_recheck(&mut container)?;
+let endorsers = key_endorsements(&mut container, &reports, &leaf_fingerprint)?;
+let trusted = endorsers.iter().any(|fp| my_trusted_ca_set.contains(fp));
+# Ok::<(), pcf_sig::Error>(())
+```
+
+For Pattern B the CA does NOT need the leaf's PCF file. The stateless
+workflow (spec 12.2.1 W2): the client sends only the leaf key bytes plus the
+planned partition identity; the CA returns a self-contained response that
+the client embeds locally.
+
+```rust
+use pcf_sig::{embed_endorsement, issue_endorsement, EndorsementRequest, KeyFormat};
+use pcf::HashAlgo;
+
+// CA side (stateless; no I/O, no file):
+let request = EndorsementRequest {
+    key_format: KeyFormat::Ed25519Raw,
+    key_data: leaf_public_key_bytes,
+    intended_uid: agreed_uid,           // stable across leaf and CA
+    intended_label: agreed_label,
+    data_hash_algo: HashAlgo::Sha256,
+};
+let response = issue_endorsement(&ca_signer, &request, signed_at)?;
+
+// Client side: embed into the local container:
+embed_endorsement(&mut container, &response, ca_key_uid, ca_sig_uid, "ca-key", "ca-sig")?;
+# Ok::<(), pcf_sig::Error>(())
+```
+
+Because the response commits to the leaf `PCFSIG_KEY` bytes (not to any file
+location), a client may also cache and re-use the same response across many
+PCF files in which the leaf KEY partition is reproduced byte-identical
+(workflow W3, license pattern).
+
 ## Relocation stability
 
 The central property: a PCFSIG_SIG signature remains valid across any

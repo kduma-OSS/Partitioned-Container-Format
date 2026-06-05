@@ -54,6 +54,9 @@ Table of Contents
    10. Signing Procedure
    11. Verification Procedure
    12. Multi-Signer Semantics
+       12.1 Self-binding Key Attestations (Pattern A, Informative)
+       12.2 Key Endorsement via Countersignature (Pattern B, Informative)
+       12.2.1 Issuance Workflows for Pattern B (Informative)
    13. Reader Algorithms (Informative)
    14. Writer Algorithms (Informative)
    15. Conformance and Validation
@@ -468,6 +471,13 @@ Table of Contents
    trust decisions on Section 6.4 metadata alone; for X.509-bearing
    key formats the authoritative validity period is taken from the
    certificate itself, and TLV metadata is at most a hint.
+
+   For application-bound key attestations (JWT, SCITT statements,
+   custom signed envelopes) carried as application-private TLV
+   entries, see Section 12.1 -- which states the cryptographic
+   binding rule such attestations MUST satisfy. For endorsement of a
+   key by another key in the same file (CA-style trust chains
+   without X.509), see Section 12.2.
 
 
 -------------------------------------------------------------------------------
@@ -998,6 +1008,212 @@ Table of Contents
    used data and therefore of its data_hash. The semantics of
    countersignatures (timestamping, notarisation) are an application
    layer; the profile merely supports the pattern.
+
+12.1 Self-binding Key Attestations (Pattern A, Informative)
+
+   An application MAY wish to attach a server-issued attestation --
+   a JWT, a SCITT statement, a custom signed envelope -- to a
+   PCFSIG_KEY partition so that a Verifier can decide trust without
+   relying on X.509 or on out-of-band identity.
+
+   The mechanism is the optional_metadata TLV stream (Section 6.4):
+   the attestation bytes are written as the value of a TLV entry
+   whose tag is in the application-private range 0x8000..0xFFFF.
+   The TLV stream is part of the partition's stored bytes and is
+   therefore protected by the partition's PCF data_hash, and by the
+   manifest of any PCFSIG_SIG that lists the PCFSIG_KEY partition's
+   uid (Section 12.2).
+
+   CRITICAL BINDING RULE. The PCFSIG_KEY fingerprint (Section 6.3)
+   is computed over key_data only -- it does NOT cover the TLV
+   stream. Therefore, an attacker with write access to the file
+   could in principle replace the TLV bytes without disturbing the
+   fingerprint or any PCFSIG_SIG that signs only the key. To make
+   the attestation cryptographically meaningful, the attestation
+   itself MUST internally commit to the fingerprint of the key it
+   describes. Acceptable patterns include:
+
+      - JWT carrying a "cnf" (Confirmation, RFC 7800) claim whose
+        "jkt" value equals the SHA-256 fingerprint of key_data;
+      - SCITT statement whose envelope binds the same fingerprint;
+      - any other signed object whose payload contains the
+        PCFSIG_KEY fingerprint and that is signed by the
+        attestation authority's key.
+
+   A conforming application Verifier:
+
+      - MUST validate the attestation independently (i.e., as a JWT
+        / SCITT / custom signature) against its own trust anchors;
+
+      - MUST reject any attestation that does not internally commit
+        to the PCFSIG_KEY fingerprint;
+
+      - MUST NOT grant trust on the basis of attestation presence
+        alone; the PCF-SIG profile itself reports per-signature,
+        per-entry cryptographic facts, and the application layer
+        composes them with attestation-derived facts into a trust
+        decision.
+
+   The profile remains content-agnostic: it recognises the TLV
+   entry by tag but does not parse attestation contents.
+
+12.2 Key Endorsement via Countersignature (Pattern B, Informative)
+
+   A second way to express trust without X.509 is for one signer
+   ("CA") to countersign another signer's ("leaf") PCFSIG_KEY
+   partition. Because a PCFSIG_KEY partition is an ordinary PCF
+   partition with a uid and a PCF data_hash that depend on the
+   key_data and fingerprint, signing its uid + protected fields
+   cryptographically binds the CA to the leaf's key material.
+
+   Mechanism. The CA emits one PCFSIG_SIG partition (Section 7)
+   whose Manifest contains a SignedEntry with:
+
+      uid              = the PCF uid of the leaf's PCFSIG_KEY
+                         partition;
+      partition_type   = TYPE_PCFSIG_KEY (0xAAAB0001);
+      label            = the leaf's PCFSIG_KEY label, verbatim;
+      used_bytes       = the leaf's PCFSIG_KEY used_bytes;
+      data_hash_algo_id = a cryptographic id (16, 17, or 18);
+      data_hash        = the leaf's PCFSIG_KEY data_hash.
+
+   The CA's PCFSIG_KEY partition carries the CA's own public key,
+   indexed by its own fingerprint as any other key. CA and leaf
+   are distinct PCFSIG_KEY partitions with distinct fingerprints.
+
+   Distinction from notarisation. A SignedEntry whose uid is the
+   leaf's PCFSIG_SIG partition (NOT its PCFSIG_KEY) is a
+   notarisation of that specific assertion: it binds the CA to
+   the exact manifest + signature bytes the leaf produced.
+   Notarisation is a different semantic from key endorsement and
+   does NOT transfer trust to other assertions by the same leaf.
+   Writers MUST choose deliberately between the two.
+
+   Verifier composition. The PCF-SIG profile reports per-signature
+   facts (Section 11). The application identifies key endorsements
+   by, for each Valid signature report R, scanning all other Valid
+   reports R' for a SignedEntry whose uid is the PCFSIG_KEY
+   partition of R's signer and whose per-entry verdict is Valid.
+   The endorsers of R are then {R'.signer_key_fingerprint}. The
+   application combines this with its trusted-CA-fingerprint set
+   to decide trust.
+
+   Multi-hop chains. A v1.0 endorsement is a single hop. Multi-
+   hop chains (CA -> Sub-CA -> leaf) are supported by iterating
+   the same check: a Sub-CA's PCFSIG_KEY partition can itself be
+   endorsed by a root CA's PCFSIG_SIG. The application performs
+   the iteration; the profile defines only the per-hop primitive.
+
+   Independence. A leaf MAY publish a signature before any
+   endorsement exists for its key, and an endorsement MAY be
+   added after the leaf's signatures (no in-place edit is
+   required; both leaf and CA partitions are simply additional
+   PCF partitions). A missing or invalid endorsement does NOT
+   invalidate the leaf's own signature -- it is reported as
+   "valid but unendorsed" and the application policy decides
+   whether to accept.
+
+12.2.1 Issuance Workflows for Pattern B (Informative)
+
+   Because the CA's SignedEntry commits only to the leaf
+   PCFSIG_KEY's identity fields (uid, partition_type, label,
+   used_bytes, data_hash_algo_id, data_hash) and to the bytes of
+   the leaf's Key Record (via data_hash), the CA does NOT need
+   the leaf's PCF container file in order to produce a valid
+   endorsement. Three operational workflows follow:
+
+   (W1) Online, file round-trip.
+
+        The client sends its complete PCF file to the CA. The CA
+        adds its own PCFSIG_KEY and PCFSIG_SIG partitions and
+        returns the modified file. Simplest to implement but
+        requires shipping the full container to the CA and
+        grants the CA Writer-level access to the file. NOT
+        RECOMMENDED as a default; useful when the CA is part of
+        the same trust domain as the producer.
+
+   (W2) Online, stateless server (RECOMMENDED).
+
+        The CA never sees the container. The client sends only:
+
+           { key_format, key_data, intended_uid, intended_label,
+             data_hash_algo }
+
+        The CA deterministically:
+
+           1. Serialises the leaf Key Record:
+                 leaf_key_record =
+                     KeyRecord(key_format, key_data).to_bytes()
+              (per Section 6.1; the fingerprint inside the
+              record is SHA-256(key_data) per Section 6.3.)
+
+           2. Builds one SignedEntry committing to the planned
+              identity of the partition that will carry the
+              leaf key in the client's file:
+
+                 SignedEntry {
+                     uid               = intended_uid,
+                     partition_type    = TYPE_PCFSIG_KEY,
+                     label             = intended_label,
+                     used_bytes        = len(leaf_key_record),
+                     data_hash_algo_id = data_hash_algo,
+                     data_hash         = hash(data_hash_algo,
+                                              leaf_key_record),
+                 }
+
+           3. Builds a Manifest with this one SignedEntry and
+              the CA's own signer_key_fingerprint, and signs it
+              with the CA private key.
+
+           4. Returns to the client:
+
+                 { ca_key_record_bytes,        // CA's Key Record
+                   ca_manifest_bytes,          // serialised manifest
+                   ca_sig_bytes }              // signature over manifest
+
+        The client embeds ca_key_record_bytes as a PCFSIG_KEY
+        partition (only if a partition with that fingerprint is
+        not already present, Section 4.3) and assembles
+        ca_manifest_bytes || u32(sig_len) || ca_sig_bytes ||
+        u32(0) as a PCFSIG_SIG partition. The client's file is
+        never transmitted.
+
+        Stateless CA properties: the CA needs only its private
+        signing key (typically HSM-fronted) and its issuance
+        policy. It does NOT need a database of past issuances,
+        a uid registry, or knowledge of the client's container.
+
+   (W3) Offline, pre-issued endorsement (license pattern).
+
+        The CA performs steps (1)-(4) of W2 once, and the client
+        caches the resulting { ca_key_record_bytes,
+        ca_manifest_bytes, ca_sig_bytes } triple. Because the
+        countersignature binds to the bytes of the leaf Key
+        Record (and to the planned partition identity fields),
+        NOT to a file location, the same triple is valid in any
+        PCF file in which the leaf PCFSIG_KEY partition is
+        reproduced with byte-identical intended_uid,
+        intended_label, data_hash_algo_id, and key_data. This
+        is the natural pattern for software licensing or
+        long-lived device attestations: one CA round-trip, many
+        signed artefacts.
+
+   Identifier stability. PCF recommends UUIDv7 for partition
+   uids (PCF Section 7.2), but UUIDv7 is timestamp-based and
+   fresh-per-write. W2 and W3 require intended_uid stability;
+   a Writer using Pattern B SHOULD generate the leaf
+   PCFSIG_KEY's uid by a deterministic scheme -- for example,
+   UUIDv5 over (CA_namespace, leaf_fingerprint) -- or use a
+   uid assigned and returned by the CA. The intended_label
+   SHOULD also be fixed by convention (e.g., always "pcfkey").
+
+   Composition with Pattern A. A leaf PCFSIG_KEY MAY carry
+   both a Pattern A self-binding attestation (Section 12.1) in
+   its optional_metadata TLV stream AND be endorsed via
+   Pattern B by a separate PCFSIG_SIG. The two mechanisms are
+   independent and may be used together (e.g., the
+   application accepts a key if BOTH an in-key JWT verifies
+   AND a trusted PCF-SIG CA has endorsed the partition).
 
 
 -------------------------------------------------------------------------------
