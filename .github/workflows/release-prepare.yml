@@ -1,0 +1,116 @@
+name: Prepare Release (bump versions, tag, trigger release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'New version (e.g. 0.0.2). If empty, patch is incremented from reference/PCF-v1.0/Cargo.toml.'
+        required: false
+        type: string
+      dry_run:
+        description: 'Pass dry_run=true to the triggered Release workflow (no actual registry publish).'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  prepare:
+    name: Bump versions and create release tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Determine new version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -m1 '^version = ' reference/PCF-v1.0/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if ! [[ "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "ERROR: Could not read a valid semver from reference/PCF-v1.0/Cargo.toml (got '$CURRENT')"
+            exit 1
+          fi
+
+          INPUT='${{ github.event.inputs.version }}'
+          if [ -n "$INPUT" ]; then
+            NEW="$INPUT"
+            if ! [[ "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "ERROR: Provided version '$NEW' is not a valid semantic version (expected X.Y.Z)"
+              exit 1
+            fi
+          else
+            IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT"
+            NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "version=$NEW"    >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT -> $NEW"
+
+      - name: Refuse to retag existing version
+        shell: bash
+        run: |
+          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "ERROR: tag v${{ steps.version.outputs.version }} already exists"
+            exit 1
+          fi
+
+      - name: Bump Rust Cargo.toml files
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEW='${{ steps.version.outputs.version }}'
+          sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' reference/PCF-v1.0/Cargo.toml
+          sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' reference/PFS-MS-v1.0/Cargo.toml
+          sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' tools/pcf-debug/Cargo.toml
+          # path-dep version pins on pcf
+          sed -i 's|pcf = { path = "\.\./PCF-v1.0", version = "[^"]*" }|pcf = { path = "../PCF-v1.0", version = "'"$NEW"'" }|' reference/PFS-MS-v1.0/Cargo.toml
+          sed -i 's|pcf = { path = "\.\./\.\./reference/PCF-v1.0", version = "[^"]*" }|pcf = { path = "../../reference/PCF-v1.0", version = "'"$NEW"'" }|' tools/pcf-debug/Cargo.toml
+
+      - name: Bump TypeScript package
+        shell: bash
+        working-directory: implementations/ts
+        run: npm version '${{ steps.version.outputs.version }}' --no-git-tag-version --allow-same-version
+
+      - name: Bump .NET Pcf.csproj
+        shell: bash
+        run: |
+          NEW='${{ steps.version.outputs.version }}'
+          sed -i 's|<Version>[^<]*</Version>|<Version>'"$NEW"'</Version>|' implementations/dotnet/src/Pcf/Pcf.csproj
+
+      - name: Show diff
+        run: git --no-pager diff --stat && git --no-pager diff
+
+      - name: Commit, tag and push
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEW='${{ steps.version.outputs.version }}'
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Bump version to v$NEW"
+          git tag -a "v$NEW" -m "Release v$NEW"
+          git push origin HEAD --follow-tags
+
+      - name: Trigger Release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run release.yml \
+            --ref "v${{ steps.version.outputs.version }}" \
+            -f version='${{ steps.version.outputs.version }}' \
+            -f dry_run='${{ github.event.inputs.dry_run }}'

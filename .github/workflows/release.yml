@@ -88,16 +88,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Set workspace versions
-        shell: bash
-        run: |
-          VERSION='${{ needs.resolve.outputs.version }}'
-          sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' reference/PCF-v1.0/Cargo.toml
-          sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' reference/PFS-MS-v1.0/Cargo.toml
-          sed -i 's/^version = "[^"]*"/version = "'"$VERSION"'"/' tools/pcf-debug/Cargo.toml
-          sed -i 's/pcf = { path = "\.\.\/PCF-v1.0", version = "[^"]*" }/pcf = { path = "..\/PCF-v1.0", version = "'"$VERSION"'" }/' reference/PFS-MS-v1.0/Cargo.toml
-          sed -i 's/pcf = { path = "\.\.\/\.\.\/reference\/PCF-v1.0", version = "[^"]*" }/pcf = { path = "..\/..\/reference\/PCF-v1.0", version = "'"$VERSION"'" }/' tools/pcf-debug/Cargo.toml
-
       - name: Authenticate with crates.io (OIDC trusted publishing)
         id: cargo-auth
         if: needs.resolve.outputs.dry_run != 'true'
@@ -160,8 +150,6 @@ jobs:
         run: npm install -g npm@latest
       - run: npm ci
       - run: npm run build
-      - name: Set version
-        run: npm version '${{ needs.resolve.outputs.version }}' --no-git-tag-version --allow-same-version
       - name: npm publish (OIDC trusted publishing, auto-provenance)
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
