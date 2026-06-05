@@ -1,0 +1,23 @@
+[package]
+name = "pcf-compact"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+description = "Compactor for Partitioned Container Format (PCF) files: reclaims dead space and trims reservations"
+repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+readme = "README.md"
+keywords = ["pcf", "container", "compact", "binary"]
+categories = ["command-line-utilities", "filesystem"]
+
+[lib]
+name = "pcf_compact"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pcf-compact"
+path = "src/main.rs"
+
+[dependencies]
+pcf = { path = "../../reference/PCF-v1.0", version = "0.0.1" }
