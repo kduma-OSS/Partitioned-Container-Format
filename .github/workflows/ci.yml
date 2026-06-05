@@ -118,3 +118,20 @@ jobs:
       - run: cargo clippy -p pcf-debug --all-targets -- -D warnings
       - run: cargo build -p pcf-debug --verbose
       - run: cargo test -p pcf-debug --verbose
+
+  pcf-compact:
+    name: pcf-compact tool
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -p pcf-compact -- --check
+      - run: cargo clippy -p pcf-compact --all-targets -- -D warnings
+      - run: cargo build -p pcf-compact --verbose
+      - run: cargo test -p pcf-compact --verbose
