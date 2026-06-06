@@ -222,9 +222,10 @@ jobs:
       - name: Install splitsh-lite
         run: |
           set -euo pipefail
-          curl -sSL https://github.com/splitsh/lite/releases/download/v2.0.0/lite_linux_amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin splitsh-lite
-          splitsh-lite --version
+          curl -sSL https://github.com/splitsh/lite/releases/download/v1.0.1/lite_linux_amd64.tar.gz \
+            | tar -xz -C /tmp
+          sudo install /tmp/splitsh-lite /usr/local/bin/splitsh-lite
+          splitsh-lite --version || splitsh-lite --help | head -5
 
       - name: Split implementations/php and push to PHP-PCF-lib
         env:
