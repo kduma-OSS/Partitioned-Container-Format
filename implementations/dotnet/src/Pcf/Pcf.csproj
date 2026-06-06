@@ -11,7 +11,7 @@
     <Description>Reader/writer for the Partitioned Container Format (PCF) v1.0.</Description>
 
     <PackageId>KDuma.Pcf</PackageId>
-    <Version>0.0.3</Version>
+    <Version>0.0.4</Version>
     <Authors>Krystian Duma</Authors>
     <Company>kduma-OSS</Company>
     <Product>Partitioned Container Format</Product>
