@@ -219,23 +219,38 @@ jobs:
           private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
           owner: kduma-OSS-splits
 
-      - name: Install splitsh-lite
-        run: |
-          set -euo pipefail
-          curl -sSL https://github.com/splitsh/lite/releases/download/v1.0.1/lite_linux_amd64.tar.gz \
-            | tar -xz -C /tmp
-          sudo install /tmp/splitsh-lite /usr/local/bin/splitsh-lite
-          splitsh-lite --version || splitsh-lite --help | head -5
-
-      - name: Split implementations/php and push to PHP-PCF-lib
+      - name: Initialize split repo if empty
         env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ needs.resolve.outputs.version }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          SHA=$(splitsh-lite --prefix=implementations/php --quiet | tail -n1)
-          echo "Split SHA: $SHA"
-          REMOTE="https://x-access-token:${APP_TOKEN}@github.com/kduma-OSS-splits/PHP-PCF-lib.git"
-          git push --force "$REMOTE" "${SHA}:refs/heads/master"
-          git tag -f "v${VERSION}" "$SHA"
-          git push --force "$REMOTE" "refs/tags/v${VERSION}"
+          REPO="kduma-OSS-splits/PHP-PCF-lib"
+          TMPDIR=$(mktemp -d)
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/$REPO.git" "$TMPDIR" 2>&1 || true
+          if ! git -C "$TMPDIR" rev-parse HEAD >/dev/null 2>&1; then
+            echo "Repository $REPO is empty, initializing master with empty commit..."
+            git -C "$TMPDIR" checkout -b master
+            git -C "$TMPDIR" config user.name  "github-actions[bot]"
+            git -C "$TMPDIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "$TMPDIR" commit --allow-empty -m "Initial commit"
+            git -C "$TMPDIR" push origin master
+          else
+            echo "Repository $REPO already has commits, skipping initialization"
+          fi
+          rm -rf "$TMPDIR"
+
+      - name: Checkout tag for split
+        run: git checkout "refs/tags/v${{ needs.resolve.outputs.version }}"
+
+      - name: Split implementations/php to PHP-PCF-lib (with tag)
+        uses: danharrin/monorepo-split-github-action@v2.4.0
+        env:
+          PAT: x-access-token:${{ steps.app-token.outputs.token }}
+        with:
+          tag: 'v${{ needs.resolve.outputs.version }}'
+          package_directory: 'implementations/php'
+          repository_organization: 'kduma-OSS-splits'
+          repository_name: 'PHP-PCF-lib'
+          branch: 'master'
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
