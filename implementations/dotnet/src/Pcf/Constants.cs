@@ -49,4 +49,30 @@ public static class Constants
 
     /// <summary>The NIL UID (all zero). MUST NOT label a live partition.</summary>
     public static readonly byte[] NilUid = new byte[UidSize];
+
+    /// <summary>
+    /// Sentinel value of <c>partition_table_offset</c> (header offset 12) meaning
+    /// the partition-table head is recorded in the file <see cref="Trailer"/> at
+    /// the end of the file rather than in the header (spec section 4, "File
+    /// Trailer"). The all-ones u64 can never be a real offset, so it is
+    /// unambiguous.
+    /// </summary>
+    public const ulong PtOffsetTrailer = 0xFFFF_FFFF_FFFF_FFFF;
+
+    /// <summary>Fixed size of the optional file trailer, in bytes.</summary>
+    public const long TrailerSize = 20;
+
+    /// <summary>
+    /// Trailer signature, 8 bytes: the file <see cref="Magic"/> reversed
+    /// (<c>0x1A 0x0A 0x0D 'T' 'R' 'P' 'K' 0x89</c>). Placed as the final 8 bytes
+    /// of the file so a reader can detect and validate the trailer at the end.
+    /// </summary>
+    public static readonly byte[] TrailerMagic =
+        { 0x1A, 0x0A, 0x0D, (byte)'T', (byte)'R', (byte)'P', (byte)'K', 0x89 };
+
+    /// <summary>Chain-direction flag: forward chain, head = first block.</summary>
+    public const byte ChainForward = 0;
+
+    /// <summary>Chain-direction flag: backward chain, head = last/newest block.</summary>
+    public const byte ChainBackward = 1;
 }

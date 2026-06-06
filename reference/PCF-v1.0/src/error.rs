@@ -11,6 +11,9 @@ pub enum Error {
     BadMagic,
     /// The file's major version is not implemented by this crate.
     UnsupportedMajor(u16),
+    /// The header requested trailer-based table location but the trailer at the
+    /// end of the file is missing or has a bad magic (e.g. a truncated file).
+    BadTrailer,
     /// A hash-algorithm identifier is not in the registry.
     UnknownHashAlgo(u8),
     /// A live entry used the reserved type `0x00000000`.
@@ -39,6 +42,7 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "i/o error: {e}"),
             Error::BadMagic => write!(f, "bad magic: not a PCF file"),
             Error::UnsupportedMajor(v) => write!(f, "unsupported major version {v}"),
+            Error::BadTrailer => write!(f, "missing or invalid file trailer"),
             Error::UnknownHashAlgo(id) => write!(f, "unknown hash algorithm id {id}"),
             Error::ReservedType => write!(f, "reserved partition type used for a live entry"),
             Error::NilUid => write!(f, "NIL UID used for a live entry"),

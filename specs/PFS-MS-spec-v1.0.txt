@@ -125,8 +125,9 @@ Table of Contents
         max_length, a used_bytes, and a data_hash. The PCF uid is distinct
         from, and unrelated to, the PFS-MS node_id (Section 10.1).
 
-      - The PCF partition table is a chain of PCF Table Blocks linked by
-        next_table_offset, terminated by 0.
+      - The PCF partition table is a backward-linked chain of PCF Table Blocks
+        (PCF Section 5.4), terminated by 0, whose head is published through a
+        PCF File Trailer.
 
    PFS-MS constrains, but does not change, how these PCF facilities are used.
    The two reserved application type values 0xAAAA0001 and 0xAAAA0002 are an
@@ -169,8 +170,8 @@ Table of Contents
 
    Member block  Any of a session's Table Blocks other than its HEAD block.
 
-   Head          The newest committed session, located via the PCF header's
-                 partition_table_offset.
+   Head          The newest committed session, located via the PCF File
+                 Trailer at the end of the file (Section 4.3).
 
    Live node     A node that currently exists in the reconstructed tree
                  (Section 10.2).
@@ -200,28 +201,32 @@ Table of Contents
 
 4.1  Append-Only Discipline
 
-   With one explicit exception (Section 4.3), a Writer MUST NOT modify any
-   byte that has already been committed. New file content, new node records,
-   new session records, and new Table Blocks are written only into previously
-   unused regions at or beyond the current end of meaningful data. Earlier
-   partitions, earlier Table Blocks, and the data they reference are immutable
-   once their session has been committed.
+   A Writer MUST NOT modify any byte that has already been committed. New file
+   content, new node records, new session records, new Table Blocks, and the
+   trailer that publishes each commit (Section 4.3) are written only into
+   previously unused regions at or beyond the current end of meaningful data.
+   Earlier partitions, earlier Table Blocks, and the data they reference are
+   immutable once their session has been committed. Unlike earlier drafts that
+   rewrote the 8-byte header pointer, PFS-MS now performs NO in-place write at
+   all.
 
    This discipline is what makes PFS-MS multi-session: like a track burned
    onto an optical disc, a committed session is frozen.
 
 4.2  The Backward-Linked Session Chain
 
-   PCF permits next_table_offset to point anywhere in the file (PCF Section
-   3, Section 5.1). PFS-MS exploits this: each session writes one or more PCF
-   Table Blocks, and the LAST of a session's blocks points (via
-   next_table_offset) to the HEAD block of the PREVIOUS session (a lower file
-   offset), or 0 if this is the first session. A session's blocks thus form a
-   contiguous run within the single backward chain.
+   PFS-MS uses PCF's BACKWARD chain direction (PCF Section 5.4): each session
+   writes one or more PCF Table Blocks, and the LAST of a session's blocks
+   points (via next_table_offset, interpreted as the previous-block link) to
+   the HEAD block of the PREVIOUS session (a lower file offset), or 0 if this
+   is the first session. A session's blocks thus form a contiguous run within
+   the single backward chain. The chain head is the newest session's HEAD
+   block, published via the File Trailer (Section 4.3); the trailer's
+   chain_flags MUST set the backward bit.
 
    The PCF chain therefore runs from the newest session toward the oldest:
 
-        header.partition_table_offset --> block(newest) .next -->
+        trailer.partition_table_offset --> block(newest) .next -->
             block(...) .next --> block(oldest) .next = 0
 
    A consequence is that each block's table_hash is computed once, at the
@@ -231,18 +236,21 @@ Table of Contents
    ever required (contrast PCF Section 8.5, which assumes forward growth with
    in-place edits).
 
-4.3  The Header as the Sole Mutable Superblock
+4.3  Publishing the Head via the File Trailer
 
-   Committing a session requires publishing the new head. The ONLY permitted
-   in-place modification in PFS-MS is overwriting the 8-byte
-   partition_table_offset field of the PCF header (PCF header offset 12) so
-   that it points to the newly written session's Table Block. No other
-   committed byte is ever rewritten.
+   Committing a session requires publishing the new head. PFS-MS uses PCF
+   trailer mode (PCF Section 5.4): the PCF header's partition_table_offset
+   permanently holds the trailer sentinel (0xFFFFFFFFFFFFFFFF), written once at
+   creation and never changed. Each commit appends a fresh PCF File Trailer at
+   the end of the file whose partition_table_offset is the new session's HEAD
+   block and whose chain_flags mark the chain BACKWARD.
 
-   This is the deliberate "soft" append-only choice: file content and all
-   metadata are strictly immutable; a single fixed 8-byte pointer acts as the
-   atomically-swapped superblock, exactly as a multi-session disc updates its
-   table of contents to make the latest session current.
+   PFS-MS is therefore PURELY append-only: NO committed byte -- not even the
+   header -- is ever rewritten. The file's final 20 bytes always describe the
+   newest committed session, exactly as a multi-session disc's most recent
+   table of contents makes the latest session current. A Reader recovers the
+   head by the backward trailer scan of PCF Section 5.4, which transparently
+   ignores the bytes of an interrupted, never-finalised append.
 
 
 -------------------------------------------------------------------------------
@@ -339,24 +347,29 @@ Table of Contents
            HEAD block MUST already carry the digest of the member blocks
            written in this step (Section 8.2).
       S5.  Flush all of the above to stable storage (e.g., fsync).
-      S6.  Overwrite header.partition_table_offset with the HEAD block offset
-           (the single permitted in-place write, Section 4.3).
-      S7.  Flush the header to stable storage.
+      S6.  APPEND a PCF File Trailer at the end of the file whose
+           partition_table_offset is the new HEAD block offset and whose
+           chain_flags mark the chain BACKWARD (Section 4.3, PCF Section 5.4).
+           No committed byte -- including the header -- is rewritten.
+      S7.  Flush the appended trailer to stable storage.
 
    The new session becomes current at, and only at, step S6. Steps S1..S5
-   write only into unused regions and do not affect any reader until S6.
+   write only into unused regions and do not affect any reader until the new
+   trailer becomes the last valid trailer in the file at S6.
 
-   The 8-byte pointer write in S6 SHOULD be a single aligned 8-byte store.
-   Implementations requiring protection against a torn pointer write MAY use
-   an external checkpointing scheme; such schemes are out of scope for this
-   profile.
+   The 20-byte trailer SHOULD be written by a single append. If a crash leaves
+   a torn or absent final trailer, the PCF backward trailer scan (PCF Section
+   5.4) simply skips it and recovers the previous session's trailer, so a
+   partially written commit is invisible without any external checkpointing.
 
 6.3  Crash Recovery
 
-   If a crash occurs before S6 completes, the header still points to the
-   previous head. Any bytes written by the interrupted session (S1..S4) lie
-   beyond the live chain and are invisible to readers; PCF readers ignore
-   inter-region content (PCF Section 12). A Writer reopening such a file:
+   If a crash occurs before S6 completes, no new trailer (or only a torn one)
+   exists, so the last valid trailer still names the previous head. Any bytes
+   written by the interrupted session (S1..S4) lie beyond the live chain and
+   are invisible to readers; the PCF backward trailer scan skips them and PCF
+   readers ignore inter-region content (PCF Section 5.4, Section 12). A Writer
+   reopening such a file:
 
       - MAY ignore the trailing garbage and append the next session after it
         (wasting the abandoned space), OR
@@ -807,7 +820,9 @@ Table of Contents
 11.1 Open and detect
 
       read and verify the 20-byte PCF header (PCF 11.1)
-      head = header.partition_table_offset
+      resolve the head per PCF 11.1: the header holds the trailer sentinel, so
+        scan backward for the File Trailer and take head =
+        trailer.partition_table_offset (PCF Section 5.4)
       detection: the head block SHOULD contain exactly one PFS_SESSION entry
                  whose record_magic == "PFSS"; if so, treat as a PFS-MS file.
 
@@ -931,8 +946,9 @@ Table of Contents
    A conforming PFS-MS Writer MUST:
 
       W1.  Be a conforming PCF Writer (PCF Section 12, W1..W5).
-      W2.  Never modify a committed byte except the 8-byte
-           header.partition_table_offset at commit (Section 4.3).
+      W2.  Never modify a committed byte: write the trailer sentinel into the
+           PCF header once at creation, and publish each commit by APPENDING a
+           new PCF File Trailer (Section 4.3). PFS-MS is purely append-only.
       W3.  Publish each session as one or more Table Blocks: exactly one HEAD
            block carrying the single PFS_SESSION partition with the correct
            session_seq, block_count, member_blocks_digest, and
@@ -1081,7 +1097,7 @@ Table of Contents
       PFS_SESSION: seq=1, prev_session_hash = zero, prev algo id = 0,
                 block_count = 1, member_blocks_digest = zero (algo 0)
       HEAD block T1: 5 entries, next_table_offset = 0, table_hash = H1
-      Commit: header.partition_table_offset = offset(T1)
+      Commit: append File Trailer -> offset(T1), chain_flags = BACKWARD
 
    Session 2 (session_seq = 2): modify hello.txt to "Hello, world\n"
       RAW r2  : VCDIFF patch from "Hello\n" to "Hello, world\n"
@@ -1092,14 +1108,14 @@ Table of Contents
       PFS_SESSION: seq=2, prev_session_hash = H1, prev algo id = T1's algo,
                 block_count = 1, member_blocks_digest = zero (algo 0)
       HEAD block T2: 3 entries, next_table_offset = offset(T1), table_hash = H2
-      Commit: header.partition_table_offset = offset(T2)
+      Commit: append File Trailer -> offset(T2), chain_flags = BACKWARD
 
    Session 3 (session_seq = 3): rename "docs" to "documents", delete hello.txt
       PFS_NODE: dir  "documents" (same node_id as "docs", new name)
       PFS_NODE: file "hello.txt" (same node_id, TOMBSTONE set, no content)
       PFS_SESSION: seq=3, prev_session_hash = H2, block_count = 1
       HEAD block T3: 3 entries, next_table_offset = offset(T2), table_hash = H3
-      Commit: header.partition_table_offset = offset(T3)
+      Commit: append File Trailer -> offset(T3), chain_flags = BACKWARD
 
    Expected reconstruction at the head (after Session 3):
       /                         (root)
@@ -1112,7 +1128,7 @@ Table of Contents
    three blocks -- one HEAD block (with the PFS_SESSION record + up to 254
    entries) and two MEMBER blocks (up to 255 entries each). block_count = 3;
    member_blocks_digest = H(M1.table_hash || M2.table_hash), where M1, M2 are
-   the member blocks in chain order. Chain: head pointer -> HEAD -> M1 -> M2
+   the member blocks in chain order. Chain: trailer -> HEAD -> M1 -> M2
    -> previous session HEAD (or 0).
 
    A reference implementation MUST also publish: the exact byte layout of one
@@ -1175,10 +1191,14 @@ Appendix A. Field Layout Summary
     162    M  bytes  writer                     (UTF-8, optional)
 
    Container facilities used unchanged from PCF
-      File Header (20 B)        magic, version 1.0, partition_table_offset = head
-      Table Block Header (74 B) partition_count, next_table_offset (-> next
-                                block of same session, or previous session
-                                HEAD block, or 0), table_hash
+      File Header (20 B)        magic, version 1.0, partition_table_offset =
+                                trailer sentinel (0xFFFFFFFFFFFFFFFF)
+      File Trailer (20 B)       at end of file: partition_table_offset = head,
+                                chain_flags = BACKWARD, trailer_magic
+                                (PCF Section 5.4)
+      Table Block Header (74 B) partition_count, next_table_offset (-> previous
+                                session HEAD block, the next member block of the
+                                same session, or 0), table_hash
       Partition Entry (141 B)   type, uid, label, start_offset, max_length,
                                 used_bytes, data_hash
 

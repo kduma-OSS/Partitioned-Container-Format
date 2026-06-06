@@ -42,6 +42,17 @@ public sealed class Container
     private uint _defaultCapacity;
     private HashAlgo _tableHashAlgo;
 
+    /// <summary>
+    /// Resolved absolute offset of the partition-table head: the header pointer
+    /// for a classic file, or the offset from the file <see cref="Trailer"/>
+    /// when the header holds <see cref="Constants.PtOffsetTrailer"/>. 0 denotes
+    /// an empty table.
+    /// </summary>
+    private ulong _tableHead;
+
+    /// <summary>Chain-direction flags resolved at open time (see <see cref="Trailer"/>).</summary>
+    private byte _chainFlags;
+
     private Container(Stream storage)
     {
         _storage = storage;
@@ -100,10 +111,22 @@ public sealed class Container
         };
         c._defaultCapacity = cap;
         c._tableHashAlgo = tableHashAlgo;
+        c._tableHead = (ulong)Constants.HeaderSize;
+        c._chainFlags = Constants.ChainForward;
         return c;
     }
 
-    /// <summary>Open an existing container, validating the header (spec C1, C2).</summary>
+    /// <summary>
+    /// Open an existing container, validating the header (spec C1, C2).
+    ///
+    /// <para>When the header's <c>partition_table_offset</c> is the
+    /// <see cref="Constants.PtOffsetTrailer"/> sentinel, the partition-table head
+    /// and chain direction are read from the file <see cref="Trailer"/> (located
+    /// by scanning backward from the end of the file). Chain traversal is
+    /// identical in both directions (follow <c>next_table_offset</c> until 0);
+    /// the direction only conveys which end is newest, exposed via
+    /// <see cref="ChainIsBackward"/>.</para>
+    /// </summary>
     public static Container Open(Stream storage)
     {
         var c = new Container(storage)
@@ -117,8 +140,18 @@ public sealed class Container
         c.ReadAt(0, hb, 20);
         c._header = FileHeader.FromBytes(hb);
 
+        if (c._header.PartitionTableOffset == Constants.PtOffsetTrailer)
+        {
+            (c._tableHead, c._chainFlags) = c.LocateTrailer();
+        }
+        else
+        {
+            c._tableHead = c._header.PartitionTableOffset;
+            c._chainFlags = Constants.ChainForward;
+        }
+
         var blocks = new List<BlockInfo>();
-        ulong off = c._header.PartitionTableOffset;
+        ulong off = c._tableHead;
         while (off != 0)
         {
             (TableBlockHeader h, _) = c.ReadBlock(off);
@@ -144,8 +177,82 @@ public sealed class Container
     /// <summary>The backing store.</summary>
     public Stream Storage => _storage;
 
-    /// <summary>The parsed file header.</summary>
+    /// <summary>
+    /// The parsed file header. In trailer mode its <c>PartitionTableOffset</c>
+    /// holds the <see cref="Constants.PtOffsetTrailer"/> sentinel; use
+    /// <see cref="TableHead"/> for the resolved head.
+    /// </summary>
     public FileHeader Header => _header;
+
+    /// <summary>
+    /// The resolved absolute offset of the partition-table head (0 if empty).
+    /// This is the value to follow regardless of header-pointer vs trailer mode.
+    /// </summary>
+    public ulong TableHead => _tableHead;
+
+    /// <summary>
+    /// Whether the chain is backward-linked (head = newest block,
+    /// <c>next_table_offset</c> points at the previous/older block). Classic
+    /// header-pointer files are always forward.
+    /// </summary>
+    public bool ChainIsBackward => (_chainFlags & 1) != 0;
+
+    /// <summary>
+    /// Locate the most recent valid file trailer by scanning backward from the
+    /// end of the file for the last 20-byte window ending in
+    /// <see cref="Constants.TrailerMagic"/> whose recorded head is empty (0) or
+    /// references a parseable table block. Bytes after that trailer — an
+    /// incomplete or aborted append — are ignored, which gives append-only
+    /// writers crash recovery for free. In the clean case the trailer is the
+    /// final <see cref="Constants.TrailerSize"/> bytes.
+    /// </summary>
+    private (ulong, byte) LocateTrailer()
+    {
+        long fileLen = _storage.Seek(0, SeekOrigin.End);
+        var tb = new byte[20];
+        long end = fileLen;
+        while (end >= Constants.TrailerSize)
+        {
+            long start = end - Constants.TrailerSize;
+            ReadAt((ulong)start, tb, 20);
+            bool magicOk = true;
+            for (int i = 0; i < 8; i++)
+            {
+                if (tb[12 + i] != Constants.TrailerMagic[i])
+                {
+                    magicOk = false;
+                    break;
+                }
+            }
+            if (magicOk)
+            {
+                Trailer t = Trailer.FromBytes(tb);
+                if (t.PartitionTableOffset == 0)
+                {
+                    return (0, t.ChainFlags);
+                }
+                // Guard against the magic appearing inside an aborted tail: the
+                // recorded head must precede this trailer and parse as a block.
+                if (start >= Constants.TableHeaderSize
+                    && t.PartitionTableOffset <= (ulong)(start - Constants.TableHeaderSize))
+                {
+                    try
+                    {
+                        var bhb = new byte[74];
+                        ReadAt(t.PartitionTableOffset, bhb, 74);
+                        TableBlockHeader.FromBytes(bhb);
+                        return (t.PartitionTableOffset, t.ChainFlags);
+                    }
+                    catch (PcfException)
+                    {
+                        // Spurious magic in an aborted tail; keep scanning.
+                    }
+                }
+            }
+            end -= 1;
+        }
+        throw PcfException.BadTrailer();
+    }
 
     // ---- low-level I/O ----------------------------------------------------
 
@@ -217,7 +324,7 @@ public sealed class Container
     public List<PartitionEntry> Entries()
     {
         var outp = new List<PartitionEntry>();
-        ulong off = _header.PartitionTableOffset;
+        ulong off = _tableHead;
         while (off != 0)
         {
             (TableBlockHeader h, List<PartitionEntry> entries) = ReadBlock(off);
@@ -254,7 +361,7 @@ public sealed class Container
 
     private (ulong, int, PartitionEntry) Locate(byte[] uid)
     {
-        ulong off = _header.PartitionTableOffset;
+        ulong off = _tableHead;
         while (off != 0)
         {
             (TableBlockHeader h, List<PartitionEntry> entries) = ReadBlock(off);
@@ -423,7 +530,7 @@ public sealed class Container
     /// </summary>
     public void Verify()
     {
-        ulong off = _header.PartitionTableOffset;
+        ulong off = _tableHead;
         while (off != 0)
         {
             (TableBlockHeader h, List<PartitionEntry> entries) = ReadBlock(off);
@@ -465,7 +572,7 @@ public sealed class Container
     {
         // Gather live entries and their data, in chain order.
         var live = new List<KeyValuePair<PartitionEntry, byte[]>>();
-        ulong off = _header.PartitionTableOffset;
+        ulong off = _tableHead;
         while (off != 0)
         {
             (TableBlockHeader h, List<PartitionEntry> entries) = ReadBlock(off);
@@ -561,6 +668,33 @@ public sealed class Container
     {
         byte[] img = CompactedImage();
         output.Write(img, 0, img.Length);
+    }
+
+    // ---- trailer mode -----------------------------------------------------
+
+    /// <summary>
+    /// Convert the file to trailer mode: append a fixed <see cref="Trailer"/> at
+    /// the end of the file recording the current partition-table head, then
+    /// overwrite the header's <c>partition_table_offset</c> with the
+    /// <see cref="Constants.PtOffsetTrailer"/> sentinel so the head is located
+    /// via that trailer. The chain built by this writer is forward-linked, so the
+    /// trailer records <see cref="Constants.ChainForward"/>.
+    /// </summary>
+    public void FinalizeWithTrailer()
+    {
+        var trailer = new Trailer
+        {
+            PartitionTableOffset = _tableHead,
+            ChainFlags = Constants.ChainForward,
+        };
+        long pos = _storage.Seek(0, SeekOrigin.End);
+        byte[] tb = trailer.ToBytes();
+        WriteAt((ulong)pos, tb, tb.Length);
+        _header.PartitionTableOffset = Constants.PtOffsetTrailer;
+        byte[] hb = _header.ToBytes();
+        WriteAt(0, hb, hb.Length);
+        _chainFlags = Constants.ChainForward;
+        _dataEof = (ulong)pos + (ulong)Constants.TrailerSize;
     }
 
     // ---- helpers ----------------------------------------------------------

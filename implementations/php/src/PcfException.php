@@ -83,4 +83,9 @@ final class PcfException extends \RuntimeException
     {
         return new self(ErrorKind::Io, "i/o error: {$message}", $previous);
     }
+
+    public static function badTrailer(): self
+    {
+        return new self(ErrorKind::BadTrailer, 'missing or invalid file trailer');
+    }
 }

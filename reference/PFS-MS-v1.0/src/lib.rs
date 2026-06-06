@@ -13,8 +13,10 @@
 //! * **PFS_SESSION** (`0xAAAA0002`) — one [`SessionRecord`] per session.
 //!
 //! Sessions are committed by appending **backward-linked** Table Blocks
-//! (newest → oldest via `next_table_offset`) and atomically rewriting the
-//! 8-byte header pointer — the sole in-place mutation (Section 4.3).
+//! (newest → oldest via `next_table_offset`) followed by a fresh PCF
+//! [`pcf::Trailer`] at the end of the file. The header permanently holds the
+//! [`pcf::PT_OFFSET_TRAILER`] sentinel, so a commit rewrites **no** committed
+//! byte — PFS-MS is purely append-only (Section 4.3).
 //!
 //! ## Example
 //!

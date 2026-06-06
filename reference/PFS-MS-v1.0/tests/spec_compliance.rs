@@ -205,10 +205,10 @@ fn r8_inter_session_chain_verifies() {
     r.verify().unwrap();
 }
 
-// ---- W2: only the 8-byte header pointer changes across a commit ----------
+// ---- W2: a commit is purely additive; no committed byte changes ----------
 
 #[test]
-fn w2_commit_only_rewrites_the_header_pointer() {
+fn w2_commit_is_append_only_no_in_place_writes() {
     let f1 = {
         let mut w = FsWriter::mkfs(Cursor::new(Vec::new()), HashAlgo::Sha256).unwrap();
         w.put_file("a.txt", b"alpha\n").unwrap();
@@ -220,12 +220,18 @@ fn w2_commit_only_rewrites_the_header_pointer() {
         w.put_file("b.txt", b"beta\n").unwrap();
         w.into_storage().into_inner()
     };
-    // The new session only appends; the previous bytes are immutable except
-    // for the 8-byte partition_table_offset at header offset 12.
+    // The new session only appends: EVERY prior byte is immutable, including
+    // the header. The new head is published by the trailer appended at the new
+    // end of file, so the header keeps the PT_OFFSET_TRAILER sentinel forever.
     assert!(f2.len() > len1);
-    assert_eq!(&f2[0..12], &f1[0..12]); // magic + version unchanged
-    assert_eq!(&f2[20..len1], &f1[20..len1]); // all prior bytes immutable
-    assert_ne!(&f2[12..20], &f1[12..20]); // head pointer advanced
+    assert_eq!(&f2[0..len1], &f1[0..len1]); // entire prior prefix immutable
+    assert_eq!(&f2[12..20], &pcf::PT_OFFSET_TRAILER.to_le_bytes()); // sentinel
+                                                                    // The last 20 bytes are a valid trailer that points at the newest head.
+    let n = f2.len();
+    let tb: [u8; 20] = f2[n - 20..].try_into().unwrap();
+    let t = pcf::Trailer::from_bytes(&tb).unwrap();
+    assert_eq!(t.chain_flags, pcf::CHAIN_BACKWARD);
+    assert!(t.partition_table_offset >= len1 as u64); // head is in the new region
 }
 
 // ---- W3: HEAD carries the session, MEMBER blocks do not ------------------
@@ -269,11 +275,11 @@ fn w3_member_blocks_carry_no_session_record() {
 #[test]
 fn reference_vector_is_byte_exact() {
     let bytes = build_reference_vector().unwrap();
-    assert_eq!(bytes.len(), 2986, "reference vector length changed");
+    assert_eq!(bytes.len(), 3066, "reference vector length changed");
     let digest = HashAlgo::Sha256.compute(&bytes);
     let hex: String = digest[..32].iter().map(|b| format!("{b:02x}")).collect();
     assert_eq!(
-        hex, "79b6dd7093172b4fe33d57a5ca53994c387dd3149021ef4fcb2b8a3fea7429bc",
+        hex, "1f7104b2f75c7c955b51f301b9a8adad1a70df080fbdf6450f7f04f9d0d62eed",
         "reference vector bytes changed"
     );
 }

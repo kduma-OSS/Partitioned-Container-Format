@@ -29,6 +29,7 @@ Table of Contents
        5.1  Table Block Header
        5.2  Partition Entry
        5.3  Overflow Table Blocks
+       5.4  File Trailer and Chain Direction (Optional)
    6.  Partition Data Model
    7.  Reserved Values
        7.1  Reserved Partition Types
@@ -168,11 +169,22 @@ Table of Contents
       |   Overflow Table Block #1 ...        |  linked by next_table_offset
       |   (anywhere in the file)             |
       +======================================+
+      |   File Trailer (OPTIONAL, 20 bytes)  |  present only in trailer mode
+      |   (the final bytes of the file)      |  (Section 5.4)
+      +======================================+
 
    The Writer is trusted to lay out these regions sensibly. By default
    partitions SHOULD be placed one after another without overlap, but the
    format permits gaps between regions and does not, by itself, prohibit
    overlap (Section 12).
+
+   A Reader locates the first Table Block in one of two ways. Normally the
+   header's partition_table_offset holds its absolute offset directly. When
+   that field instead holds the all-ones sentinel value, the offset is read
+   from a fixed File Trailer at the very end of the file (Section 5.4); this
+   "trailer mode" lets a Writer publish a new partition table by appending,
+   without ever rewriting the header, which is the basis for purely
+   append-only files.
 
 
 -------------------------------------------------------------------------------
@@ -214,9 +226,18 @@ Table of Contents
       understand (Section 9).
 
    partition_table_offset
-      Absolute offset of the first Table Block (Section 5.1). Because offset
+      Absolute offset of the head Table Block (Section 5.1). Because offset
       0 always contains the header, the value 0 is never a valid Table Block
       location.
+
+      The single reserved value 0xFFFFFFFFFFFFFFFF (the all-ones u64,
+      hereafter the TRAILER SENTINEL) does not denote an offset. When the
+      field holds this value, the head Table Block's offset and the chain
+      direction are instead read from a File Trailer at the end of the file
+      (Section 5.4). The all-ones value can never be a real offset, so it is
+      unambiguous. A Reader that does not implement the File Trailer cannot
+      locate the table in such a file and MUST reject it rather than
+      misinterpret the sentinel as an offset.
 
    This version of the format defines NO header checksum and NO reserved
    header padding.
@@ -227,8 +248,12 @@ Table of Contents
 -------------------------------------------------------------------------------
 
    The partition table is a singly linked chain of one or more Table Blocks.
-   Iteration begins at partition_table_offset and follows next_table_offset
-   until it reaches 0.
+   Iteration begins at the head Table Block -- located either directly from
+   partition_table_offset or, in trailer mode, from the File Trailer
+   (Section 5.4) -- and follows next_table_offset until it reaches 0. The
+   chain may be forward-linked or backward-linked (Section 5.4); traversal is
+   mechanically identical either way, and the direction only conveys which end
+   of the chain is the newest block.
 
 5.1  Table Block Header
 
@@ -251,8 +276,12 @@ Table of Contents
 
    next_table_offset
       Absolute offset of the next Table Block in the chain, or 0 to indicate
-      that this is the last block. A Reader MUST stop chain traversal when it
-      reads 0.
+      that this is the final block in iteration order. A Reader MUST stop chain
+      traversal when it reads 0. In a forward-linked chain "next" means the
+      following block; in a backward-linked chain (Section 5.4) the same field
+      is interpreted as the offset of the PREVIOUS (older) block. The
+      terminator 0 applies in both directions, and the byte layout is identical
+      regardless of direction.
 
    table_hash_algo_id
       Identifier of the algorithm used for table_hash (Section 8.1).
@@ -331,6 +360,73 @@ Table of Contents
    following region, or MAY simply allocate a new Table Block for new
    partitions. A Reader never needs this information; it reads exactly
    partition_count entries from each block and follows the chain.
+
+5.4  File Trailer and Chain Direction (Optional)
+
+   By default a Reader locates the head Table Block directly from the header's
+   partition_table_offset. As an alternative, a Writer MAY publish the head
+   through a FILE TRAILER: a fixed structure occupying the final bytes of the
+   file. Trailer mode is selected by storing the TRAILER SENTINEL
+   (0xFFFFFFFFFFFFFFFF) in partition_table_offset (Section 4).
+
+   The motivation is append-only operation. In trailer mode a Writer publishes
+   a new head by appending data, the new Table Block(s), and a new trailer at
+   the end of the file -- it never rewrites the header or any previously
+   committed byte. Because the file's last bytes always describe the newest
+   table, this supports write-once media, crash-safe commits, and multi-session
+   profiles layered on PCF.
+
+   The Trailer is 20 bytes:
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0      8    u64    partition_table_offset
+        8      1    u8     chain_flags
+        9      3    bytes  reserved (MUST be 0)
+       12      8    bytes  trailer_magic
+      ------  ----  -----  --------------------------------------------------
+      Total: 20 bytes
+
+   partition_table_offset
+      Absolute offset of the head Table Block, or 0 when the file holds no
+      table yet (an empty container).
+
+   chain_flags
+      Bit 0 selects the chain direction: 0 = FORWARD (the head is the first
+      block; next_table_offset points to the following block), 1 = BACKWARD
+      (the head is the last/newest block; next_table_offset points to the
+      previous/older block). Bits 1..7 are reserved and MUST be 0.
+
+   trailer_magic
+      MUST be exactly the following 8 bytes -- the file magic (Section 4)
+      reversed:
+
+         0x1A 0x0A 0x0D 0x54 0x52 0x50 0x4B 0x89
+                              \    \    \    \
+                              "T"  "R"  "P"  "K"  (i.e. "KPRT" reversed)
+
+      Placing the magic in the final 8 bytes of the file lets a Reader detect
+      and validate the Trailer by reading from the end. The Trailer carries no
+      checksum of its own: the integrity of the head it points to is already
+      protected by that block's table_hash (Section 8.4), mirroring the
+      header's own lack of a checksum (Section 14, A13).
+
+   Locating the Trailer. A Reader in trailer mode locates the Trailer by
+   scanning backward from the end of the file for the last 20-byte window whose
+   final 8 bytes equal trailer_magic and whose recorded partition_table_offset
+   is 0 or references a parseable Table Block. In the common (cleanly written)
+   case the Trailer is exactly the final 20 bytes and is found immediately.
+   Bytes following the last valid Trailer -- for example an append that was
+   interrupted before its own trailer was written -- are ignored. This makes a
+   torn or aborted append invisible: the Reader recovers the most recently
+   completed table. If no valid Trailer is found, the file is malformed and the
+   Reader MUST reject it.
+
+   A classic file (header pointer, not the sentinel) is always treated as
+   FORWARD. Trailer mode and chain direction are independent in principle, but
+   the BACKWARD direction exists specifically to serve append-only writers,
+   which cannot rewrite older blocks to point forward at a newly appended one.
 
 
 -------------------------------------------------------------------------------
@@ -540,14 +636,22 @@ Table of Contents
       verify header.magic
       if header.version_major not supported: reject
 
-      tbl = header.partition_table_offset
+      // Resolve the head Table Block (Sections 4, 5.4).
+      if header.partition_table_offset == 0xFFFFFFFFFFFFFFFF:   // trailer mode
+          scan backward from end of file for the last 20-byte window whose
+            final 8 bytes == trailer_magic and whose head is 0 or parseable
+          if none found: reject
+          tbl = trailer.partition_table_offset    // 0 means empty container
+      else:
+          tbl = header.partition_table_offset
+
       while tbl != 0:
           read 74-byte block header at tbl
           verify table_hash over [tbl, tbl + 74 + count*141) with hash zeroed
           for i in 0 .. count-1:
               entry = read 141 bytes at tbl + 74 + i*141
               process(entry)
-          tbl = block.next_table_offset
+          tbl = block.next_table_offset           // next or previous per direction
 
 11.2  Verifying a Partition
 
@@ -616,8 +720,10 @@ Table of Contents
 
       C1.  Verify magic; reject on mismatch.
       C2.  Reject a file whose version_major is unsupported (Section 9).
-      C3.  Traverse the Table Block chain starting at partition_table_offset,
-           stopping when next_table_offset == 0.
+      C3.  Resolve the head Table Block: use partition_table_offset directly,
+           or, when it holds the trailer sentinel, locate the head and chain
+           direction from the File Trailer (Section 5.4). Then traverse the
+           chain from the head, stopping when next_table_offset == 0.
       C4.  For each Table Block, verify table_hash (Section 8.4) unless its
            table_hash_algo_id is 0.
       C5.  Treat as malformed any live entry whose type is 0x00000000
@@ -626,6 +732,11 @@ Table of Contents
       C7.  Treat a label as invalid if any byte is >= 0x80 (Section 10).
       C8.  When verifying partition data, verify data_hash (Section 8.3)
            unless data_hash_algo_id is 0.
+      C9.  In trailer mode (partition_table_offset is the sentinel), validate
+           trailer_magic and reject a file in which no valid File Trailer can
+           be located (Section 5.4). A Reader that does not implement the File
+           Trailer MUST reject a file whose partition_table_offset is the
+           sentinel rather than treat the sentinel as an offset.
 
    A conforming Writer MUST:
 
@@ -636,6 +747,10 @@ Table of Contents
            each table_hash consistent after any modification.
       W5.  Zero-fill unused bytes of every fixed-size field (label tail, hash
            tail).
+      W6.  In trailer mode, store the sentinel in partition_table_offset and
+           ensure a valid File Trailer (correct trailer_magic, zeroed reserved
+           bytes) is the final 20 bytes of the file after every commit
+           (Section 5.4).
 
    The format TRUSTS the Writer regarding physical layout. A Reader is NOT
    required to validate, and by default does not validate:
@@ -731,7 +846,22 @@ Table of Contents
         layout-changing addition as a major bump.
 
    A15. The all-zero next_table_offset terminates the chain; offset 0 is never
-        a valid Table Block location because the header occupies it.
+        a valid Table Block location because the header occupies it. The
+        all-ones value 0xFFFFFFFFFFFFFFFF is reserved in partition_table_offset
+        as the trailer sentinel (Section 4); it likewise can never be a real
+        offset.
+
+   A16. The File Trailer (Section 5.4) is optional and additive. The 20-byte
+        header layout is unchanged: trailer mode is signalled purely by a
+        reserved value of an existing field, and all trailer metadata lives in
+        the trailer itself. A backward-linked chain reuses next_table_offset
+        with the opposite meaning, again without any layout change. The trailer
+        is anchored at the end of the file and located by a backward scan for
+        trailer_magic, so an interrupted append (whose trailer was not yet
+        written) is transparently ignored and the previous committed table is
+        recovered -- the append-only analogue of A13's observation that a
+        damaged pointer is caught by the self-consistent blocks it would
+        reach.
 
 
 -------------------------------------------------------------------------------
@@ -840,9 +970,18 @@ Appendix A. Field Layout Summary
      10   2  u16    version_minor
      12   8  u64    partition_table_offset
 
+   File Header note: partition_table_offset == 0xFFFFFFFFFFFFFFFF is the
+   trailer sentinel (the head is in the File Trailer; Section 5.4).
+
+   File Trailer (OPTIONAL, 20 bytes, at the end of the file)
+      0   8  u64    partition_table_offset     (0 = empty container)
+      8   1  u8     chain_flags                (bit0: 0=forward, 1=backward)
+      9   3  bytes  reserved                   (MUST be 0)
+     12   8  bytes  trailer_magic = 1A 0A 0D 54 52 50 4B 89   (file magic reversed)
+
    Table Block Header (74 bytes, at partition_table_offset / next_table_offset)
       0   1  u8     partition_count            (0..255)
-      1   8  u64    next_table_offset          (0 = end of chain)
+      1   8  u64    next_table_offset          (0 = end of chain; prev block if backward)
       9   1  u8     table_hash_algo_id
      10  64  bytes  table_hash
 

@@ -18,6 +18,16 @@ pub enum DiagKind {
     /// A `next_table_offset` points to an earlier offset (legal under the
     /// PFS-MS append model, surfaced for information only).
     BackwardChainLink { from: u64, to: u64 },
+    /// The header holds the trailer sentinel; the partition-table head was
+    /// resolved from a file trailer (surfaced for information only).
+    TrailerResolved {
+        /// Offset of the resolved trailer.
+        trailer_offset: u64,
+        /// Partition-table head recorded in the trailer (0 = empty).
+        head: u64,
+        /// Whether the trailer flags the chain as backward-linked.
+        backward: bool,
+    },
     /// A partition's stored `data_hash` does not match its bytes.
     DataHashMismatch { uid: [u8; 16] },
     /// A table block's stored `table_hash` does not match its bytes.

@@ -63,6 +63,7 @@ export {
   tableHeaderFromBytes,
   computeTableHash,
 } from "./table.js";
+export { type Trailer, trailerToBytes, trailerFromBytes } from "./trailer.js";
 export { type Storage, MemoryStorage } from "./storage.js";
 export { NodeFileStorage } from "./node-storage.js";
 export { Container, type BlockView } from "./container.js";
