@@ -219,14 +219,22 @@ jobs:
           private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
           owner: kduma-OSS-splits
 
-      - uses: danharrin/monorepo-split-github-action@v2.3.0
-        with:
-          package_directory: 'implementations/php'
-          repository_organization: 'kduma-OSS-splits'
-          repository_name: 'PHP-PCF-lib'
-          user_name: 'github-actions[bot]'
-          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
-          branch: 'master'
-          tag: 'v${{ needs.resolve.outputs.version }}'
+      - name: Install splitsh-lite
+        run: |
+          set -euo pipefail
+          curl -sSL https://github.com/splitsh/lite/releases/download/v2.0.0/lite_linux_amd64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin splitsh-lite
+          splitsh-lite --version
+
+      - name: Split implementations/php and push to PHP-PCF-lib
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          SHA=$(splitsh-lite --prefix=implementations/php --quiet | tail -n1)
+          echo "Split SHA: $SHA"
+          REMOTE="https://x-access-token:${APP_TOKEN}@github.com/kduma-OSS-splits/PHP-PCF-lib.git"
+          git push --force "$REMOTE" "${SHA}:refs/heads/master"
+          git tag -f "v${VERSION}" "$SHA"
+          git push --force "$REMOTE" "refs/tags/v${VERSION}"
