@@ -205,52 +205,7 @@ jobs:
     name: Split PHP to packagist source repo
     needs: resolve
     if: needs.resolve.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.SPLIT_APP_ID }}
-          private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
-          owner: kduma-OSS-splits
-
-      - name: Initialize split repo if empty
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          REPO="kduma-OSS-splits/PHP-PCF-lib"
-          TMPDIR=$(mktemp -d)
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/$REPO.git" "$TMPDIR" 2>&1 || true
-          if ! git -C "$TMPDIR" rev-parse HEAD >/dev/null 2>&1; then
-            echo "Repository $REPO is empty, initializing master with empty commit..."
-            git -C "$TMPDIR" checkout -b master
-            git -C "$TMPDIR" config user.name  "github-actions[bot]"
-            git -C "$TMPDIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git -C "$TMPDIR" commit --allow-empty -m "Initial commit"
-            git -C "$TMPDIR" push origin master
-          else
-            echo "Repository $REPO already has commits, skipping initialization"
-          fi
-          rm -rf "$TMPDIR"
-
-      - name: Checkout tag for split
-        run: git checkout "refs/tags/v${{ needs.resolve.outputs.version }}"
-
-      - name: Split implementations/php to PHP-PCF-lib (with tag)
-        uses: danharrin/monorepo-split-github-action@v2.4.0
-        env:
-          PAT: x-access-token:${{ steps.app-token.outputs.token }}
-        with:
-          tag: 'v${{ needs.resolve.outputs.version }}'
-          package_directory: 'implementations/php'
-          repository_organization: 'kduma-OSS-splits'
-          repository_name: 'PHP-PCF-lib'
-          branch: 'master'
-          user_name: 'github-actions[bot]'
-          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
+    uses: ./.github/workflows/php-split.yml
+    with:
+      tag: v${{ needs.resolve.outputs.version }}
+    secrets: inherit

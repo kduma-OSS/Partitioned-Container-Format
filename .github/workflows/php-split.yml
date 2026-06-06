@@ -12,6 +12,13 @@ on:
         description: 'Tag to split (leave empty for branch-only split)'
         required: false
         type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to split (leave empty for branch-only split)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   split:
@@ -53,7 +60,7 @@ jobs:
       - name: Resolve tag
         id: resolve-tag
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ inputs.tag }}" ]]; then
+          if [[ -n "${{ inputs.tag }}" ]]; then
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
           elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
             echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
