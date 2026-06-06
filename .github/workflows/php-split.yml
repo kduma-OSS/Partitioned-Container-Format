@@ -1,4 +1,4 @@
-name: PHP subtree split
+name: Sync / PHP Split Repository
 
 on:
   push:

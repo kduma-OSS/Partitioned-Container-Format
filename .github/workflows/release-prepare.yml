@@ -1,4 +1,4 @@
-name: Prepare Release (bump versions, tag, trigger release)
+name: Release / Prepare
 
 on:
   workflow_dispatch:
