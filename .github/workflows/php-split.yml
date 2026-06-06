@@ -6,6 +6,19 @@ on:
     paths:
       - 'implementations/php/**'
       - '.github/workflows/php-split.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to split (leave empty for branch-only split)'
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to split (leave empty for branch-only split)'
+        required: false
+        type: string
+        default: ''
 
 jobs:
   split:
@@ -24,13 +37,64 @@ jobs:
           private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
           owner: kduma-OSS-splits
 
-      - uses: danharrin/monorepo-split-github-action@v2.3.0
+      - name: Initialize split repo if empty
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          REPO="kduma-OSS-splits/PHP-PCF-lib"
+          TMPDIR=$(mktemp -d)
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/$REPO.git" "$TMPDIR" 2>&1 || true
+          if ! git -C "$TMPDIR" rev-parse HEAD >/dev/null 2>&1; then
+            echo "Repository $REPO is empty, initializing master with empty commit..."
+            git -C "$TMPDIR" checkout -b master
+            git -C "$TMPDIR" config user.name  "github-actions[bot]"
+            git -C "$TMPDIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "$TMPDIR" commit --allow-empty -m "Initial commit"
+            git -C "$TMPDIR" push origin master
+          else
+            echo "Repository $REPO already has commits, skipping initialization"
+          fi
+          rm -rf "$TMPDIR"
+
+      - name: Resolve tag
+        id: resolve-tag
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout tag
+        if: steps.resolve-tag.outputs.tag != ''
+        run: git checkout "refs/tags/${{ steps.resolve-tag.outputs.tag }}"
+
+      - name: Split (no tag)
+        if: steps.resolve-tag.outputs.tag == ''
+        uses: danharrin/monorepo-split-github-action@v2.4.0
+        env:
+          PAT: x-access-token:${{ steps.app-token.outputs.token }}
         with:
           package_directory: 'implementations/php'
           repository_organization: 'kduma-OSS-splits'
           repository_name: 'PHP-PCF-lib'
+          branch: 'master'
           user_name: 'github-actions[bot]'
           user_email: '41898282+github-actions[bot]@users.noreply.github.com'
-          branch: 'master'
+
+      - name: Split (with tag)
+        if: steps.resolve-tag.outputs.tag != ''
+        uses: danharrin/monorepo-split-github-action@v2.4.0
         env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          PAT: x-access-token:${{ steps.app-token.outputs.token }}
+        with:
+          tag: ${{ steps.resolve-tag.outputs.tag }}
+          package_directory: 'implementations/php'
+          repository_organization: 'kduma-OSS-splits'
+          repository_name: 'PHP-PCF-lib'
+          branch: 'master'
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'

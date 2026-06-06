@@ -128,6 +128,19 @@ jobs:
             cargo publish -p pcf-debug --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
           fi
 
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
+      - name: cargo publish pcf-compact
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pcf-compact --allow-dirty --dry-run
+          else
+            cargo publish -p pcf-compact --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
   publish-npm:
     name: Publish to npm
     needs: resolve
@@ -185,7 +198,7 @@ jobs:
         if: needs.resolve.outputs.dry_run != 'true'
         uses: NuGet/login@v1
         with:
-          user: kduma
+          user: krystianduma
       - name: dotnet nuget push
         if: needs.resolve.outputs.dry_run != 'true'
         run: |
@@ -205,28 +218,7 @@ jobs:
     name: Split PHP to packagist source repo
     needs: resolve
     if: needs.resolve.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.SPLIT_APP_ID }}
-          private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
-          owner: kduma-OSS-splits
-
-      - uses: danharrin/monorepo-split-github-action@v2.3.0
-        with:
-          package_directory: 'implementations/php'
-          repository_organization: 'kduma-OSS-splits'
-          repository_name: 'PHP-PCF-lib'
-          user_name: 'github-actions[bot]'
-          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
-          branch: 'master'
-          tag: 'v${{ needs.resolve.outputs.version }}'
-        env:
-          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+    uses: ./.github/workflows/php-split.yml
+    with:
+      tag: v${{ needs.resolve.outputs.version }}
+    secrets: inherit

@@ -1,18 +1,22 @@
 [package]
-name = "pcf-debug"
+name = "pcf-compact"
 version = "0.0.5"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
-description = "Inspection and visualisation tool for Partitioned Container Format (PCF) files"
+description = "Compactor for Partitioned Container Format (PCF) files: reclaims dead space and trims reservations"
 repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
 homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
 readme = "README.md"
-keywords = ["pcf", "container", "debug", "inspector", "binary"]
-categories = ["command-line-utilities", "development-tools::debugging"]
+keywords = ["pcf", "container", "compact", "binary"]
+categories = ["command-line-utilities", "filesystem"]
+
+[lib]
+name = "pcf_compact"
+path = "src/lib.rs"
 
 [[bin]]
-name = "pcf-debug"
+name = "pcf-compact"
 path = "src/main.rs"
 
 [dependencies]
