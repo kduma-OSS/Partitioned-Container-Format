@@ -44,6 +44,9 @@ public enum PcfError
 
     /// <summary>An attempt was made to add a partition whose UID already exists.</summary>
     DuplicateUid,
+
+    /// <summary>The header requested trailer-based location but no valid trailer exists.</summary>
+    BadTrailer,
 }
 
 /// <summary>An error raised by a PCF reader or writer operation.</summary>
@@ -93,4 +96,7 @@ public sealed class PcfException : Exception
 
     internal static PcfException DuplicateUid() =>
         new(PcfError.DuplicateUid, "duplicate UID");
+
+    internal static PcfException BadTrailer() =>
+        new(PcfError.BadTrailer, "missing or invalid file trailer");
 }

@@ -36,4 +36,6 @@ enum ErrorKind: string
     case NotFound = 'not_found';
     /** An attempt was made to add a partition whose UID already exists. */
     case DuplicateUid = 'duplicate_uid';
+    /** The header requested trailer-based location but no valid trailer exists. */
+    case BadTrailer = 'bad_trailer';
 }

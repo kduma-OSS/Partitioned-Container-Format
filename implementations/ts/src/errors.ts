@@ -30,6 +30,8 @@ export enum PcfErrorKind {
   NotFound = "NotFound",
   /** An attempt was made to add a partition whose UID already exists. */
   DuplicateUid = "DuplicateUid",
+  /** The header requested trailer-based location but no valid trailer exists. */
+  BadTrailer = "BadTrailer",
 }
 
 /** All ways a PCF operation can fail. */
@@ -120,5 +122,12 @@ export class PcfError extends Error {
 
   static duplicateUid(): PcfError {
     return new PcfError(PcfErrorKind.DuplicateUid, "duplicate UID");
+  }
+
+  static badTrailer(): PcfError {
+    return new PcfError(
+      PcfErrorKind.BadTrailer,
+      "missing or invalid file trailer",
+    );
   }
 }
