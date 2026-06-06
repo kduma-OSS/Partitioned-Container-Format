@@ -1,6 +1,6 @@
 [package]
 name = "pfs-ms"
-version = "0.0.4"
+version = "0.0.5"
 edition = "2021"
 description = "Reference implementation of PFS-MS v1.0, the PCF File System Multi-Session profile"
 license = "MIT OR Apache-2.0"
@@ -21,7 +21,7 @@ path = "src/bin/pfs.rs"
 [dependencies]
 # The PFS-MS profile is layered strictly above PCF v1.0; every byte container
 # operation goes through the reference PCF crate.
-pcf = { path = "../PCF-v1.0", version = "0.0.4" }
+pcf = { path = "../PCF-v1.0", version = "0.0.5" }
 
 # VCDIFF (RFC 3284) is the required delta algorithm (patch_algo_id = 1).
 # `oxidelta` is a pure-Rust encoder/decoder; default features (CLI, file-io,
