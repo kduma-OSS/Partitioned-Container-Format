@@ -3,7 +3,7 @@
   <!-- Shared metadata for every .NET library under implementations/dotnet/
        (pcf/, and future libraries such as pfs/). Lockstep version lives here. -->
   <PropertyGroup>
-    <Version>0.0.5</Version>
+    <Version>0.0.6</Version>
     <Authors>Krystian Duma</Authors>
     <Company>kduma-OSS</Company>
     <Product>Partitioned Container Format</Product>

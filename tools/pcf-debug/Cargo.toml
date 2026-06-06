@@ -1,6 +1,6 @@
 [package]
 name = "pcf-debug"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -16,4 +16,4 @@ name = "pcf-debug"
 path = "src/main.rs"
 
 [dependencies]
-pcf = { path = "../../reference/PCF-v1.0", version = "0.0.5" }
+pcf = { path = "../../reference/PCF-v1.0", version = "0.0.6" }
