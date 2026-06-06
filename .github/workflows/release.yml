@@ -128,6 +128,19 @@ jobs:
             cargo publish -p pcf-debug --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
           fi
 
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
+      - name: cargo publish pcf-compact
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pcf-compact --allow-dirty --dry-run
+          else
+            cargo publish -p pcf-compact --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
   publish-npm:
     name: Publish to npm
     needs: resolve
