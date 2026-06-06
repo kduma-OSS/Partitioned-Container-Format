@@ -218,36 +218,7 @@ jobs:
     name: Split PHP to packagist source repo
     needs: resolve
     if: needs.resolve.outputs.dry_run != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Generate GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.SPLIT_APP_ID }}
-          private-key: ${{ secrets.SPLIT_APP_PRIVATE_KEY }}
-          owner: kduma-OSS-splits
-
-      - name: Install splitsh-lite
-        run: |
-          set -euo pipefail
-          curl -sSL https://github.com/splitsh/lite/releases/download/v2.0.0/lite_linux_amd64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin splitsh-lite
-          splitsh-lite --version
-
-      - name: Split implementations/php and push to PHP-PCF-lib
-        env:
-          APP_TOKEN: ${{ steps.app-token.outputs.token }}
-          VERSION: ${{ needs.resolve.outputs.version }}
-        run: |
-          set -euo pipefail
-          SHA=$(splitsh-lite --prefix=implementations/php --quiet | tail -n1)
-          echo "Split SHA: $SHA"
-          REMOTE="https://x-access-token:${APP_TOKEN}@github.com/kduma-OSS-splits/PHP-PCF-lib.git"
-          git push --force "$REMOTE" "${SHA}:refs/heads/master"
-          git tag -f "v${VERSION}" "$SHA"
-          git push --force "$REMOTE" "refs/tags/v${VERSION}"
+    uses: ./.github/workflows/php-split.yml
+    with:
+      tag: v${{ needs.resolve.outputs.version }}
+    secrets: inherit
