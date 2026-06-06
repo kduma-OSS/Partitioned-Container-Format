@@ -55,7 +55,7 @@ pub fn scan<S: Read + Write + Seek>(c: &mut Container<S>) -> Result<Scan> {
     let mut uid_index: HashMap<[u8; 16], PartitionEntry> = HashMap::new();
     let mut last_seq: Option<u64> = None;
 
-    let mut tbl = c.header().partition_table_offset;
+    let mut tbl = c.table_head();
     while tbl != 0 {
         let head = c.read_block_at(tbl)?;
         let session_entries: Vec<PartitionEntry> = head

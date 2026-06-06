@@ -35,6 +35,7 @@ use crate::error::{Error, Result};
 use crate::hash::HashAlgo;
 use crate::header::FileHeader;
 use crate::table::{compute_table_hash, TableBlockHeader};
+use crate::trailer::Trailer;
 
 /// In-memory bookkeeping for one table block (not stored on disk).
 #[derive(Debug, Clone, Copy)]
@@ -69,6 +70,13 @@ pub struct BlockView {
 pub struct Container<S: Read + Write + Seek> {
     storage: S,
     header: FileHeader,
+    /// Resolved absolute offset of the partition-table head. Equal to
+    /// `header.partition_table_offset` for a classic file, or the offset taken
+    /// from the file [`Trailer`] when the header holds [`PT_OFFSET_TRAILER`].
+    /// 0 denotes an empty table.
+    table_head: u64,
+    /// Chain-direction flags resolved at open time (see [`Trailer::chain_flags`]).
+    chain_flags: u8,
     blocks: Vec<BlockInfo>,
     data_eof: u64,
     default_capacity: u32,
@@ -121,6 +129,8 @@ impl<S: Read + Write + Seek> Container<S> {
         Ok(Self {
             storage,
             header,
+            table_head: HEADER_SIZE,
+            chain_flags: CHAIN_FORWARD,
             blocks,
             data_eof,
             default_capacity: cap,
@@ -129,15 +139,30 @@ impl<S: Read + Write + Seek> Container<S> {
     }
 
     /// Open an existing container, validating the header (spec C1, C2).
+    ///
+    /// When the header's `partition_table_offset` is the [`PT_OFFSET_TRAILER`]
+    /// sentinel, the partition-table head and chain direction are read from the
+    /// fixed [`Trailer`] in the final [`TRAILER_SIZE`] bytes of the file. Chain
+    /// traversal is mechanically identical in both directions (follow
+    /// `next_table_offset` until 0); the direction only conveys which end is
+    /// newest, exposed via [`Self::chain_is_backward`].
     pub fn open(mut storage: S) -> Result<Self> {
         let mut hb = [0u8; 20];
         storage.seek(SeekFrom::Start(0))?;
         storage.read_exact(&mut hb)?;
         let header = FileHeader::from_bytes(&hb)?;
 
+        let (table_head, chain_flags) = if header.partition_table_offset == PT_OFFSET_TRAILER {
+            Self::locate_trailer(&mut storage)?
+        } else {
+            (header.partition_table_offset, CHAIN_FORWARD)
+        };
+
         let mut me = Self {
             storage,
             header,
+            table_head,
+            chain_flags,
             blocks: Vec::new(),
             data_eof: 0,
             default_capacity: 16,
@@ -145,7 +170,7 @@ impl<S: Read + Write + Seek> Container<S> {
         };
 
         let mut blocks = Vec::new();
-        let mut off = header.partition_table_offset;
+        let mut off = table_head;
         while off != 0 {
             let (h, _entries) = me.read_block(off)?;
             blocks.push(BlockInfo {
@@ -170,9 +195,66 @@ impl<S: Read + Write + Seek> Container<S> {
         self.storage
     }
 
-    /// The parsed file header.
+    /// The parsed file header. In trailer mode its `partition_table_offset`
+    /// holds the [`PT_OFFSET_TRAILER`] sentinel rather than a real offset; use
+    /// [`Self::table_head`] for the resolved head.
     pub fn header(&self) -> FileHeader {
         self.header
+    }
+
+    /// The resolved absolute offset of the partition-table head (0 if the table
+    /// is empty). This is the value to follow regardless of whether the file
+    /// uses a header pointer or a trailer.
+    pub fn table_head(&self) -> u64 {
+        self.table_head
+    }
+
+    /// Whether the chain is backward-linked (head = newest block,
+    /// `next_table_offset` points at the previous/older block). A classic
+    /// header-pointer file is always forward.
+    pub fn chain_is_backward(&self) -> bool {
+        self.chain_flags & 1 != 0
+    }
+
+    /// Locate the most recent valid file trailer by scanning backward from the
+    /// end of the file for the last 20-byte window ending in [`TRAILER_MAGIC`]
+    /// whose recorded head is either empty (0) or references a parseable table
+    /// block. Bytes after that trailer — an incomplete or aborted append — are
+    /// ignored, which gives append-only writers crash recovery for free. In the
+    /// common (clean) case the trailer is exactly the final [`TRAILER_SIZE`]
+    /// bytes, found on the first iteration.
+    fn locate_trailer(storage: &mut S) -> Result<(u64, u8)> {
+        let file_len = storage.seek(SeekFrom::End(0))?;
+        let mut end = file_len;
+        while end >= TRAILER_SIZE {
+            let start = end - TRAILER_SIZE;
+            let mut tb = [0u8; 20];
+            storage.seek(SeekFrom::Start(start))?;
+            storage.read_exact(&mut tb)?;
+            if tb[12..20] == TRAILER_MAGIC {
+                let t = Trailer::from_bytes(&tb)?;
+                if t.partition_table_offset == 0 {
+                    return Ok((0, t.chain_flags));
+                }
+                // Guard against the magic appearing inside an aborted tail: the
+                // recorded head must precede this trailer and parse as a block.
+                let head_ok = t
+                    .partition_table_offset
+                    .checked_add(TABLE_HEADER_SIZE)
+                    .is_some_and(|past| past <= start)
+                    && {
+                        let mut hb = [0u8; 74];
+                        storage.seek(SeekFrom::Start(t.partition_table_offset))?;
+                        storage.read_exact(&mut hb).is_ok()
+                            && TableBlockHeader::from_bytes(&hb).is_ok()
+                    };
+                if head_ok {
+                    return Ok((t.partition_table_offset, t.chain_flags));
+                }
+            }
+            end -= 1;
+        }
+        Err(Error::BadTrailer)
     }
 
     // ---- low-level I/O ----------------------------------------------------
@@ -230,7 +312,7 @@ impl<S: Read + Write + Seek> Container<S> {
     /// All live partition entries, in chain order.
     pub fn entries(&mut self) -> Result<Vec<PartitionEntry>> {
         let mut out = Vec::new();
-        let mut off = self.header.partition_table_offset;
+        let mut off = self.table_head;
         while off != 0 {
             let (h, entries) = self.read_block(off)?;
             out.extend(entries);
@@ -265,7 +347,7 @@ impl<S: Read + Write + Seek> Container<S> {
     }
 
     fn locate(&mut self, uid: &[u8; UID_SIZE]) -> Result<(u64, usize, PartitionEntry)> {
-        let mut off = self.header.partition_table_offset;
+        let mut off = self.table_head;
         while off != 0 {
             let (h, entries) = self.read_block(off)?;
             for (i, e) in entries.iter().enumerate() {
@@ -413,7 +495,7 @@ impl<S: Read + Write + Seek> Container<S> {
     /// Verify every table block and every partition's data against its stored
     /// hash, and run the per-entry conformance checks (spec section 12).
     pub fn verify(&mut self) -> Result<()> {
-        let mut off = self.header.partition_table_offset;
+        let mut off = self.table_head;
         while off != 0 {
             let (h, entries) = self.read_block(off)?;
             if h.table_hash_algo.verifies() {
@@ -444,7 +526,7 @@ impl<S: Read + Write + Seek> Container<S> {
     pub fn compacted_image(&mut self) -> Result<Vec<u8>> {
         // Gather live entries and their data, in chain order.
         let mut live: Vec<(PartitionEntry, Vec<u8>)> = Vec::new();
-        let mut off = self.header.partition_table_offset;
+        let mut off = self.table_head;
         while off != 0 {
             let (h, entries) = self.read_block(off)?;
             for e in entries {
@@ -527,6 +609,33 @@ impl<S: Read + Write + Seek> Container<S> {
     pub fn compact_into<W: Write>(&mut self, mut out: W) -> Result<()> {
         let img = self.compacted_image()?;
         out.write_all(&img)?;
+        Ok(())
+    }
+
+    // ---- trailer mode -----------------------------------------------------
+
+    /// Convert the file to trailer mode: append a fixed [`Trailer`] at the end
+    /// of the file recording the current partition-table head, then overwrite
+    /// the header's `partition_table_offset` with the [`PT_OFFSET_TRAILER`]
+    /// sentinel so the head is located via that trailer.
+    ///
+    /// This is the generic-container counterpart of an append-only writer's
+    /// commit step. The chain built by this writer is forward-linked, so the
+    /// trailer records [`CHAIN_FORWARD`]. After calling this the container
+    /// reads back identically; it is intended as a finalisation step rather
+    /// than a prelude to further in-place edits.
+    pub fn finalize_with_trailer(&mut self) -> Result<()> {
+        let trailer = Trailer {
+            partition_table_offset: self.table_head,
+            chain_flags: CHAIN_FORWARD,
+        };
+        let pos = self.storage.seek(SeekFrom::End(0))?;
+        self.write_at(pos, &trailer.to_bytes())?;
+        self.header.partition_table_offset = PT_OFFSET_TRAILER;
+        let hb = self.header.to_bytes();
+        self.write_at(0, &hb)?;
+        self.chain_flags = CHAIN_FORWARD;
+        self.data_eof = pos + TRAILER_SIZE;
         Ok(())
     }
 }
