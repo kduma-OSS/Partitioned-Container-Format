@@ -82,16 +82,16 @@ jobs:
           sed -i 's|pcf = { path = "\.\./\.\./reference/PCF-v1.0", version = "[^"]*" }|pcf = { path = "../../reference/PCF-v1.0", version = "'"$NEW"'" }|' tools/pcf-debug/Cargo.toml
           sed -i 's|pcf = { path = "\.\./\.\./reference/PCF-v1.0", version = "[^"]*" }|pcf = { path = "../../reference/PCF-v1.0", version = "'"$NEW"'" }|' tools/pcf-compact/Cargo.toml
 
-      - name: Bump TypeScript package
+      - name: Bump TypeScript packages
         shell: bash
         working-directory: implementations/ts
-        run: npm version '${{ steps.version.outputs.version }}' --no-git-tag-version --allow-same-version
+        run: npm version '${{ steps.version.outputs.version }}' -ws --no-git-tag-version --allow-same-version
 
-      - name: Bump .NET Pcf.csproj
+      - name: Bump .NET Directory.Build.props
         shell: bash
         run: |
           NEW='${{ steps.version.outputs.version }}'
-          sed -i 's|<Version>[^<]*</Version>|<Version>'"$NEW"'</Version>|' implementations/dotnet/src/Pcf/Pcf.csproj
+          sed -i 's|<Version>[^<]*</Version>|<Version>'"$NEW"'</Version>|' implementations/dotnet/Directory.Build.props
 
       - name: Show diff
         run: git --no-pager diff --stat && git --no-pager diff

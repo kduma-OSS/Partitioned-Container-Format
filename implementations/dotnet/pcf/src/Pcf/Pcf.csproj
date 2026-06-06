@@ -11,15 +11,6 @@
     <Description>Reader/writer for the Partitioned Container Format (PCF) v1.0.</Description>
 
     <PackageId>KDuma.Pcf</PackageId>
-    <Version>0.0.5</Version>
-    <Authors>Krystian Duma</Authors>
-    <Company>kduma-OSS</Company>
-    <Product>Partitioned Container Format</Product>
-    <Copyright>Copyright (c) Krystian Duma</Copyright>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/kduma-OSS/Partitioned-Container-Format</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/kduma-OSS/Partitioned-Container-Format</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
     <PackageTags>pcf;partitioned-container-format;binary;container;file-format</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <IncludeSymbols>true</IncludeSymbols>

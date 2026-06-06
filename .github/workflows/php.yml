@@ -8,7 +8,7 @@ on:
 
 defaults:
   run:
-    working-directory: implementations/php
+    working-directory: implementations/php/pcf
 
 jobs:
   test:
@@ -66,4 +66,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: pcf-testvector-php
-          path: implementations/php/pcf_testvector.bin
+          path: implementations/php/pcf/pcf_testvector.bin

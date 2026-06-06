@@ -4,7 +4,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'implementations/php/**'
+      - 'implementations/php/pcf/**'
       - '.github/workflows/php-split.yml'
   workflow_dispatch:
     inputs:
@@ -22,7 +22,7 @@ on:
 
 jobs:
   split:
-    name: split implementations/php → kduma-OSS-splits/PHP-PCF-lib
+    name: split implementations/php/pcf → kduma-OSS-splits/PHP-PCF-lib
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,7 +78,7 @@ jobs:
         env:
           PAT: x-access-token:${{ steps.app-token.outputs.token }}
         with:
-          package_directory: 'implementations/php'
+          package_directory: 'implementations/php/pcf'
           repository_organization: 'kduma-OSS-splits'
           repository_name: 'PHP-PCF-lib'
           branch: 'master'
@@ -92,7 +92,7 @@ jobs:
           PAT: x-access-token:${{ steps.app-token.outputs.token }}
         with:
           tag: ${{ steps.resolve-tag.outputs.tag }}
-          package_directory: 'implementations/php'
+          package_directory: 'implementations/php/pcf'
           repository_organization: 'kduma-OSS-splits'
           repository_name: 'PHP-PCF-lib'
           branch: 'master'

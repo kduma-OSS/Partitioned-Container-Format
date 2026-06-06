@@ -22,7 +22,7 @@ jobs:
           cache: npm
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
-      - run: npm run build
+      - run: npm run build -w @kduma-oss/pcf
 
   test:
     name: test (${{ matrix.os }})
@@ -39,7 +39,7 @@ jobs:
           cache: npm
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
-      - run: npm test
+      - run: npm test -w @kduma-oss/pcf
 
   test-vector:
     name: regenerate spec test vector
@@ -53,15 +53,15 @@ jobs:
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
       - name: Build and run the test-vector example
-        run: npm run gen-testvector -- pcf_testvector.bin
+        run: npm run gen-testvector -w @kduma-oss/pcf -- pcf_testvector.bin
       - name: Inspect generated test vector
         run: |
-          ls -l pcf_testvector.bin
-          test "$(wc -c < pcf_testvector.bin)" = "395"
+          ls -l pcf/pcf_testvector.bin
+          test "$(wc -c < pcf/pcf_testvector.bin)" = "395"
       - uses: actions/upload-artifact@v4
         with:
           name: pcf-testvector-ts
-          path: implementations/ts/pcf_testvector.bin
+          path: implementations/ts/pcf/pcf_testvector.bin
 
   coverage:
     name: code coverage
@@ -75,8 +75,8 @@ jobs:
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
       - name: Generate coverage report (enforces >=95% line / 100% function)
-        run: npm run coverage
+        run: npm run coverage -w @kduma-oss/pcf
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov-ts
-          path: implementations/ts/coverage/lcov.info
+          path: implementations/ts/pcf/coverage/lcov.info

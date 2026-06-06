@@ -82,7 +82,7 @@ store.close();
 ## Project layout
 
 ```
-implementations/ts/
+implementations/ts/pcf/
 ├── package.json
 ├── tsconfig.json
 ├── vitest.config.ts
