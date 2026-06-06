@@ -1,4 +1,4 @@
-name: CI (PFS-MS)
+name: CI / Rust (PFS-MS Reference)
 
 on:
   push:
