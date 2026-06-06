@@ -4,17 +4,19 @@ on:
   push:
     branches: [master]
     paths:
-      - 'implementations/dotnet/**'
+      - 'implementations/dotnet/pcf/**'
+      - 'implementations/dotnet/Directory.Build.props'
       - '.github/workflows/dotnet-ci.yml'
   pull_request:
     branches: [master]
     paths:
-      - 'implementations/dotnet/**'
+      - 'implementations/dotnet/pcf/**'
+      - 'implementations/dotnet/Directory.Build.props'
       - '.github/workflows/dotnet-ci.yml'
 
 defaults:
   run:
-    working-directory: implementations/dotnet
+    working-directory: implementations/dotnet/pcf
 
 jobs:
   test:

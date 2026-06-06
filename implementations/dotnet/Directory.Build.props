@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- Shared metadata for every .NET library under implementations/dotnet/
+       (pcf/, and future libraries such as pfs/). Lockstep version lives here. -->
+  <PropertyGroup>
+    <Version>0.0.5</Version>
+    <Authors>Krystian Duma</Authors>
+    <Company>kduma-OSS</Company>
+    <Product>Partitioned Container Format</Product>
+    <Copyright>Copyright (c) Krystian Duma</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/kduma-OSS/Partitioned-Container-Format</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/kduma-OSS/Partitioned-Container-Format</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+</Project>

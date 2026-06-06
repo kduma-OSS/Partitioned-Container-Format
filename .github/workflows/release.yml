@@ -162,13 +162,13 @@ jobs:
       - name: Ensure npm >= 11.5.1 (trusted publishing support)
         run: npm install -g npm@latest
       - run: npm ci
-      - run: npm run build
+      - run: npm run build -w @kduma-oss/pcf
       - name: npm publish (OIDC trusted publishing, auto-provenance)
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
-            npm publish --access public --dry-run
+            npm publish -w @kduma-oss/pcf --access public --dry-run
           else
-            npm publish --access public
+            npm publish -w @kduma-oss/pcf --access public
           fi
 
   publish-nuget:
@@ -180,7 +180,7 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: implementations/dotnet
+        working-directory: implementations/dotnet/pcf
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -212,7 +212,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nuget-package
-          path: implementations/dotnet/out/*.nupkg
+          path: implementations/dotnet/pcf/out/*.nupkg
 
   split-php:
     name: Split PHP to packagist source repo

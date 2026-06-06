@@ -75,7 +75,7 @@ reference's `Read + Write + Seek` store. Operations raise `PcfException`, whose
 ## Project structure
 
 ```
-implementations/dotnet/
+implementations/dotnet/pcf/
 ├── Pcf.sln
 ├── src/Pcf/                 # the library (targets netstandard2.0)
 │   ├── Constants.cs         # on-disk constants (spec Appendix A)
@@ -101,7 +101,7 @@ The library targets `netstandard2.0` for broad reach; the test project targets
 ## Building and testing
 
 ```sh
-cd implementations/dotnet
+cd implementations/dotnet/pcf
 dotnet build -c Release
 dotnet test  -c Release
 ```
