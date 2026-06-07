@@ -90,6 +90,12 @@ jobs:
         working-directory: implementations/ts
         run: npm version '${{ steps.version.outputs.version }}' -ws --no-git-tag-version --allow-same-version
 
+      - name: Bump PHP pcf-sig dependency on pcf
+        shell: bash
+        run: |
+          NEW='${{ steps.version.outputs.version }}'
+          sed -i 's|"kduma/pcf": "[^"]*"|"kduma/pcf": "^'"$NEW"' || dev-master"|' implementations/php/pcf-sig/composer.json
+
       - name: Bump .NET Directory.Build.props
         shell: bash
         run: |

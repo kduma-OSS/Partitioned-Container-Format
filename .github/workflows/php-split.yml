@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'implementations/php/pcf/**'
+      - 'implementations/php/pcf-sig/**'
       - '.github/workflows/php-split.yml'
   workflow_dispatch:
     inputs:
@@ -22,8 +23,14 @@ on:
 
 jobs:
   split:
-    name: split implementations/php/pcf → kduma-OSS-splits/PHP-PCF-lib
+    name: split ${{ matrix.package.dir }} → kduma-OSS-splits/${{ matrix.package.repo }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - { dir: 'implementations/php/pcf', repo: 'PHP-PCF-lib' }
+          - { dir: 'implementations/php/pcf-sig', repo: 'PHP-PCF-SIG-lib' }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,7 +49,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          REPO="kduma-OSS-splits/PHP-PCF-lib"
+          REPO="kduma-OSS-splits/${{ matrix.package.repo }}"
           TMPDIR=$(mktemp -d)
           git clone "https://x-access-token:${GH_TOKEN}@github.com/$REPO.git" "$TMPDIR" 2>&1 || true
           if ! git -C "$TMPDIR" rev-parse HEAD >/dev/null 2>&1; then
@@ -78,9 +85,9 @@ jobs:
         env:
           PAT: x-access-token:${{ steps.app-token.outputs.token }}
         with:
-          package_directory: 'implementations/php/pcf'
+          package_directory: ${{ matrix.package.dir }}
           repository_organization: 'kduma-OSS-splits'
-          repository_name: 'PHP-PCF-lib'
+          repository_name: ${{ matrix.package.repo }}
           branch: 'master'
           user_name: 'github-actions[bot]'
           user_email: '41898282+github-actions[bot]@users.noreply.github.com'
@@ -92,9 +99,9 @@ jobs:
           PAT: x-access-token:${{ steps.app-token.outputs.token }}
         with:
           tag: ${{ steps.resolve-tag.outputs.tag }}
-          package_directory: 'implementations/php/pcf'
+          package_directory: ${{ matrix.package.dir }}
           repository_organization: 'kduma-OSS-splits'
-          repository_name: 'PHP-PCF-lib'
+          repository_name: ${{ matrix.package.repo }}
           branch: 'master'
           user_name: 'github-actions[bot]'
           user_email: '41898282+github-actions[bot]@users.noreply.github.com'
