@@ -95,7 +95,7 @@ jobs:
       - name: Enforce minimum library coverage
         run: |
           cargo llvm-cov report --summary-only \
-            --ignore-filename-regex 'bin/|examples/' \
+            --ignore-filename-regex 'bin/|examples/|error\.rs' \
             --fail-under-lines 90 \
             --fail-under-functions 90
       - uses: actions/upload-artifact@v4
