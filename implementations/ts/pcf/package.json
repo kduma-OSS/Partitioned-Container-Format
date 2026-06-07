@@ -1,6 +1,6 @@
 {
   "name": "@kduma-oss/pcf",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "TypeScript implementation of the Partitioned Container Format (PCF) v1.0",
   "license": "MIT OR Apache-2.0",
   "author": "Krystian Duma",
