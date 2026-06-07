@@ -8,9 +8,19 @@ namespace Pcf.Sig;
 /// </summary>
 public sealed class SignaturePartition
 {
+    /// <summary>Parsed Manifest.</summary>
     public Manifest Manifest { get; set; }
+
+    /// <summary>
+    /// Raw bytes of the Manifest as serialised in the partition. This is the
+    /// signing input and MUST be byte-exact, so the parser caches it.
+    /// </summary>
     public byte[] ManifestBytes { get; set; }
+
+    /// <summary>Raw signature bytes (the algorithm's natural output).</summary>
     public byte[] Signature { get; set; }
+
+    /// <summary>Trailer bytes; MUST be empty in v1.0.</summary>
     public byte[] Trailer { get; set; } = new byte[0];
 
     /// <summary>Compose a partition payload from a manifest + signature.</summary>

@@ -8,9 +8,13 @@ namespace Pcf.Sig;
 /// <summary>One metadata TLV entry (spec Section 6.4).</summary>
 public sealed class KeyMetadata
 {
+    /// <summary>16-bit tag from the metadata registry (spec Appendix B).</summary>
     public ushort Tag { get; }
+
+    /// <summary>Value bytes; interpretation depends on <see cref="Tag"/>.</summary>
     public byte[] Value { get; }
 
+    /// <summary>Construct a metadata entry from a tag and a value.</summary>
     public KeyMetadata(ushort tag, byte[] value)
     {
         Tag = tag;
@@ -21,11 +25,22 @@ public sealed class KeyMetadata
 /// <summary>A parsed Key Record (spec Section 6).</summary>
 public sealed class KeyRecord
 {
+    /// <summary><c>record_version_major</c>. v1.0 implementations require 1.</summary>
     public ushort VersionMajor { get; set; }
+
+    /// <summary><c>record_version_minor</c>.</summary>
     public ushort VersionMinor { get; set; }
+
+    /// <summary><c>key_format_id</c> (spec Section 6.2).</summary>
     public KeyFormat KeyFormat { get; set; }
+
+    /// <summary>32-byte SHA-256 fingerprint of <see cref="KeyData"/> (spec Section 6.3).</summary>
     public byte[] Fingerprint { get; set; } = new byte[Constants.FingerprintSize];
+
+    /// <summary>Raw key material in the encoding named by <see cref="KeyFormat"/>.</summary>
     public byte[] KeyData { get; set; } = new byte[0];
+
+    /// <summary>Optional metadata entries (spec Section 6.4).</summary>
     public List<KeyMetadata> Metadata { get; set; } = new();
 
     /// <summary>Build a Key Record from raw key bytes; fills version + fingerprint.</summary>

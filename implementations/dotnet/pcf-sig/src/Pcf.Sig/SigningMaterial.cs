@@ -11,9 +11,15 @@ namespace Pcf.Sig;
 /// </summary>
 public sealed class SigningMaterial
 {
+    /// <summary>The signature algorithm id this signer produces.</summary>
     public SigAlgo SigAlgo { get; }
+
+    /// <summary>The key format id of the signer's public material.</summary>
     public KeyFormat KeyFormat { get; }
+
+    /// <summary>The signer's public key bytes in the encoding named by <see cref="KeyFormat"/>.</summary>
     public byte[] PublicKeyBytes { get; }
+
     private readonly byte[] _secretSeed;
 
     private SigningMaterial(SigAlgo sigAlgo, KeyFormat keyFormat, byte[] secretSeed, byte[] publicKeyBytes)

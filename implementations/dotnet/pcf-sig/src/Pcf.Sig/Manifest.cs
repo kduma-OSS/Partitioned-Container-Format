@@ -7,11 +7,22 @@ namespace Pcf.Sig;
 /// <summary>One Signed Entry inside a Manifest (spec Section 7.2).</summary>
 public sealed class SignedEntry
 {
+    /// <summary>PCF uid of the covered partition (verbatim).</summary>
     public byte[] Uid { get; set; } = new byte[Pcf.Constants.UidSize];
+
+    /// <summary>PCF type of the covered partition (verbatim).</summary>
     public uint PartitionType { get; set; }
+
+    /// <summary>PCF label of the covered partition (verbatim 32-byte field).</summary>
     public byte[] Label { get; set; } = new byte[Pcf.Constants.LabelSize];
+
+    /// <summary>PCF <c>used_bytes</c> of the covered partition.</summary>
     public ulong UsedBytes { get; set; }
+
+    /// <summary>PCF <c>data_hash_algo_id</c>. MUST be cryptographic in v1.0 (16/17/18).</summary>
     public HashAlgo DataHashAlgo { get; set; }
+
+    /// <summary>PCF <c>data_hash</c> field bytes (verbatim 64-byte field).</summary>
     public byte[] DataHash { get; set; } = new byte[Pcf.Constants.HashFieldSize];
 
     /// <summary>Serialise to the on-disk 218-byte layout.</summary>
@@ -93,13 +104,31 @@ public sealed class SignedEntry
 /// <summary>A parsed Manifest (spec Section 7.1).</summary>
 public sealed class Manifest
 {
+    /// <summary><c>manifest_version_major</c>.</summary>
     public ushort VersionMajor { get; set; }
+
+    /// <summary><c>manifest_version_minor</c>.</summary>
     public ushort VersionMinor { get; set; }
+
+    /// <summary><c>sig_algo_id</c>.</summary>
     public SigAlgo SigAlgo { get; set; }
+
+    /// <summary>
+    /// <c>manifest_hash_algo_id</c>. MUST be cryptographic (16/17/18) and MUST
+    /// satisfy the binding required by <see cref="SigAlgo"/>.
+    /// </summary>
     public HashAlgo ManifestHashAlgo { get; set; }
+
+    /// <summary>Reserved <c>flags</c> field; v1.0 MUST be 0.</summary>
     public ushort Flags { get; set; }
+
+    /// <summary>Signer key fingerprint (SHA-256 of the matching PCFSIG_KEY's <c>key_data</c>).</summary>
     public byte[] SignerKeyFingerprint { get; set; } = new byte[Constants.FingerprintSize];
+
+    /// <summary><c>signed_at_unix_seconds</c> (i64).</summary>
     public long SignedAtUnixSeconds { get; set; }
+
+    /// <summary><c>signed_entries</c>, packed in writer-chosen order.</summary>
     public List<SignedEntry> SignedEntries { get; set; } = new();
 
     /// <summary>Construct a Manifest from its component parts.</summary>

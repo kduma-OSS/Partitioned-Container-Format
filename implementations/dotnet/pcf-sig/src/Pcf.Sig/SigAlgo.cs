@@ -92,6 +92,7 @@ public enum KeyFormat : byte
 /// <summary>Registry behaviour for <see cref="KeyFormat"/>.</summary>
 public static class KeyFormatExtensions
 {
+    /// <summary>Map a registry id byte to a key format.</summary>
     public static KeyFormat FromId(byte id)
     {
         switch (id)
@@ -105,7 +106,9 @@ public static class KeyFormatExtensions
         }
     }
 
+    /// <summary>The registry id byte for this format.</summary>
     public static byte Id(this KeyFormat f) => (byte)f;
 
+    /// <summary>Whether this library can extract a verification key from records of this format.</summary>
     public static bool IsImplemented(this KeyFormat f) => f == KeyFormat.Ed25519Raw;
 }
