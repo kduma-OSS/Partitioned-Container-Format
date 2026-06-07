@@ -17,6 +17,7 @@
 //! pfs create  <archive> <dir> [--store] [--no-metadata]
 //! pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]
 //! pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]
+//! pfs compact <file> [<out>]   # rebuild as one fresh session (discards history)
 //! ```
 
 use std::collections::{HashMap, HashSet};
@@ -62,6 +63,7 @@ fn run(args: &[String]) -> CliResult {
         "create" => cmd_create(rest),
         "update" => cmd_update(rest),
         "extract" => cmd_extract(rest),
+        "compact" => cmd_compact(rest),
         "" | "help" | "-h" | "--help" => {
             print_usage();
             Ok(())
@@ -72,7 +74,7 @@ fn run(args: &[String]) -> CliResult {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  pfs mkfs    <file>\n  pfs mkdir   <file> <path>\n  pfs put     <file> <path> [<src|->] [--store]\n  pfs mv      <file> <src> <dst>\n  pfs rm      <file> <path>\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]"
+        "usage:\n  pfs mkfs    <file>\n  pfs mkdir   <file> <path>\n  pfs put     <file> <path> [<src|->] [--store]\n  pfs mv      <file> <src> <dst>\n  pfs rm      <file> <path>\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]\n  pfs compact <file> [<out>]"
     );
 }
 
@@ -283,6 +285,14 @@ fn cmd_update(a: &[String]) -> CliResult {
         delete: p.flags.contains("delete"),
     };
     pfs_ms::update_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())
+}
+
+fn cmd_compact(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &[])?;
+    let file = p.positional.first().ok_or("missing argument: <file>")?;
+    // In-place when <out> is omitted; otherwise write a fresh file.
+    let out = p.positional.get(1).map(String::as_str).unwrap_or(file);
+    pfs_ms::compact_archive(Path::new(file), Path::new(out)).map_err(|e| e.to_string())
 }
 
 fn cmd_extract(a: &[String]) -> CliResult {

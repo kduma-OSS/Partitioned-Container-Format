@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use pcf_compact::cli::{self, Args, Parsed};
-use pcf_compact::{atomic_write, compact_bytes, format_size, CompactError};
+use pcf_compact::{atomic_write, compact_bytes, format_size, is_pfs_ms, CompactError};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -33,6 +33,11 @@ fn run(args: Args) -> Result<(), CompactError> {
         source: e,
     })?;
     let input_len = input_bytes.len() as u64;
+
+    // Refuse to corrupt a PFS-MS file unless the user explicitly opts in.
+    if !args.allow_pfs && is_pfs_ms(&input_bytes)? {
+        return Err(CompactError::PfsMsInput(args.file.clone()));
+    }
 
     let compacted = compact_bytes(&input_bytes, args.verify, args.verify)?;
 

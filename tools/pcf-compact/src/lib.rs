@@ -11,6 +11,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod cli;
 
+/// PFS-MS Session Record partition type (PFS-MS spec Section 8). Detected so we
+/// can refuse to corrupt multi-session PFS-MS files. Kept as a literal to avoid
+/// a dependency on the `pfs-ms` crate.
+const PFS_SESSION_TYPE: u32 = 0xAAAA_0002;
+
+/// True if the container holds any `PFS_SESSION` partition, i.e. it is a PFS-MS
+/// (multi-session filesystem) file that generic PCF compaction would corrupt.
+pub fn is_pfs_ms(input: &[u8]) -> Result<bool, CompactError> {
+    let mut c = pcf::Container::open(Cursor::new(input.to_vec()))?;
+    Ok(c.entries()?
+        .iter()
+        .any(|e| e.partition_type == PFS_SESSION_TYPE))
+}
+
 /// Errors surfaced by the `pcf-compact` CLI and its library back-end.
 #[derive(Debug)]
 pub enum CompactError {
@@ -25,6 +39,9 @@ pub enum CompactError {
     Pcf(pcf::Error),
     OutputExists(PathBuf),
     SameInputOutput(PathBuf),
+    /// Input is a PFS-MS multi-session file; generic PCF compaction would
+    /// corrupt it. The user must use `pfs compact`, or opt in with `--allow-pfs`.
+    PfsMsInput(PathBuf),
     /// `rename(2)` returned EXDEV — temp file and target on different filesystems.
     CrossDevice {
         tmp: PathBuf,
@@ -62,6 +79,16 @@ impl std::fmt::Display for CompactError {
             CompactError::SameInputOutput(p) => write!(
                 f,
                 "--output {} is the same file as the input; omit --output for in-place compaction",
+                p.display()
+            ),
+            CompactError::PfsMsInput(p) => write!(
+                f,
+                "{} is a PFS-MS (multi-session filesystem) file; generic PCF compaction \
+                 would corrupt it (it merges sessions and rewrites table hashes). Use \
+                 `pfs compact {}` to rebuild it as a fresh single-session snapshot, or \
+                 pass --allow-pfs to force a plain-PCF compaction that DISCARDS the PFS \
+                 structure",
+                p.display(),
                 p.display()
             ),
             CompactError::CrossDevice { tmp, target } => write!(

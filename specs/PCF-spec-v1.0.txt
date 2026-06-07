@@ -711,6 +711,17 @@ Table of Contents
       recompute every table_hash
       set header.partition_table_offset to the first block's offset
 
+      // NOTE: this operation is content-preserving at the PCF layer (each
+      // data_hash is unchanged) but it is NOT structure-preserving across
+      // blocks: it re-packs entries into fresh blocks and recomputes every
+      // table_hash and next_table_offset. A profile that imposes structure
+      // spanning blocks -- e.g. a backward-linked chain grouped into logical
+      // units, or inter-block hash commitments such as PFS-MS's
+      // member_blocks_digest / prev_session_hash -- is therefore broken by
+      // generic compaction. Such profiles MUST define and use their own
+      // profile-aware compaction; generic PCF compaction MUST NOT be applied to
+      // their files.
+
 
 -------------------------------------------------------------------------------
 12. Conformance and Validation
