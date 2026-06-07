@@ -41,6 +41,9 @@ jobs:
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
       - run: npm test -w @kduma-oss/pcf
+      # pcf-sig imports the compiled @kduma-oss/pcf dist/; build pcf first
+      # so the workspace dependency resolves before vitest runs.
+      - run: npm run build -w @kduma-oss/pcf
       - run: npm test -w @kduma-oss/pcf-sig
 
   test-vector:
@@ -54,6 +57,8 @@ jobs:
           cache: npm
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
+      - name: Build PCF (required before pcf-sig can import @kduma-oss/pcf)
+        run: npm run build -w @kduma-oss/pcf
       - name: Build and run the PCF test-vector example
         run: npm run gen-testvector -w @kduma-oss/pcf -- pcf_testvector.bin
       - name: Inspect PCF test vector
@@ -86,6 +91,8 @@ jobs:
       - run: npm ci
       - name: Generate PCF coverage report (enforces >=95% line / 100% function)
         run: npm run coverage -w @kduma-oss/pcf
+      - name: Build PCF (required before pcf-sig can import @kduma-oss/pcf)
+        run: npm run build -w @kduma-oss/pcf
       - name: Generate PCF-SIG coverage report (enforces >=90% line / 100% function)
         run: npm run coverage -w @kduma-oss/pcf-sig
       - uses: actions/upload-artifact@v4
