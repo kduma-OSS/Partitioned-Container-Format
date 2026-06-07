@@ -177,7 +177,9 @@ jobs:
       - run: npm ci
       - run: npm run build -w @kduma-oss/pcf
       - run: npm run build -w @kduma-oss/pcf-sig
-      - name: npm publish pcf (OIDC trusted publishing, auto-provenance)
+      - name: npm publish pcf
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
             npm publish -w @kduma-oss/pcf --access public --dry-run
@@ -185,6 +187,8 @@ jobs:
             npm publish -w @kduma-oss/pcf --access public
           fi
       - name: npm publish pcf-sig
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
             npm publish -w @kduma-oss/pcf-sig --access public --dry-run
