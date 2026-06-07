@@ -48,3 +48,28 @@ export const NIL_UID: Uint8Array = new Uint8Array(UID_SIZE);
  * is a `u8`).
  */
 export const MAX_ENTRIES_PER_BLOCK = 255;
+
+/**
+ * Sentinel value of `partition_table_offset` (header offset 12) meaning the
+ * partition-table head is recorded in the file trailer at the end of the file
+ * rather than in the header (spec section 4, "File Trailer"). The all-ones u64
+ * can never be a real offset, so it is unambiguous.
+ */
+export const PT_OFFSET_TRAILER = 0xffff_ffff_ffff_ffffn;
+
+/** Fixed size of the optional file trailer, in bytes. */
+export const TRAILER_SIZE = 20;
+
+/**
+ * Trailer signature, 8 bytes: the file {@link MAGIC} reversed
+ * (`0x1A 0x0A 0x0D 'T' 'R' 'P' 'K' 0x89`). Placed as the final 8 bytes of the
+ * file so a reader can detect and validate the trailer at the end.
+ */
+export const TRAILER_MAGIC: Uint8Array = new Uint8Array([
+  0x1a, 0x0a, 0x0d, 0x54, 0x52, 0x50, 0x4b, 0x89,
+]);
+
+/** Chain-direction flag: forward chain, head = first block. */
+export const CHAIN_FORWARD = 0;
+/** Chain-direction flag: backward chain, head = last/newest block. */
+export const CHAIN_BACKWARD = 1;

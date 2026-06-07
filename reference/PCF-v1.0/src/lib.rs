@@ -45,6 +45,7 @@ mod error;
 mod hash;
 mod header;
 mod table;
+mod trailer;
 
 pub use consts::*;
 pub use container::{BlockView, Container};
@@ -53,3 +54,4 @@ pub use error::{Error, Result};
 pub use hash::HashAlgo;
 pub use header::FileHeader;
 pub use table::{compute_table_hash, TableBlockHeader};
+pub use trailer::Trailer;

@@ -112,7 +112,7 @@ php examples/gen_testvector.php out.bin   # writes the canonical 395-byte file
 The suite mirrors the Rust reference:
 
 ```
-implementations/php/
+implementations/php/pcf/
 ├── composer.json
 ├── src/                      # library sources
 ├── examples/

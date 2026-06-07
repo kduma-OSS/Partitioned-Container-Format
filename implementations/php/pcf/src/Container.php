@@ -43,6 +43,16 @@ final class Container
 
     private int $dataEof = 0;
 
+    /**
+     * Resolved absolute offset of the partition-table head: the header pointer
+     * for a classic file, or the offset from the file {@see Trailer} when the
+     * header holds {@see Consts::PT_OFFSET_TRAILER}. 0 denotes an empty table.
+     */
+    private int $tableHead = 0;
+
+    /** Chain-direction flags resolved at open time (see {@see Trailer}). */
+    private int $chainFlags = Consts::CHAIN_FORWARD;
+
     private function __construct(
         private StorageInterface $storage,
         private FileHeader $header,
@@ -85,18 +95,35 @@ final class Container
             'next' => 0,
         ];
         $self->dataEof = Consts::HEADER_SIZE + Consts::TABLE_HEADER_SIZE + $cap * Consts::ENTRY_SIZE;
+        $self->tableHead = Consts::HEADER_SIZE;
 
         return $self;
     }
 
-    /** Open an existing container, validating the header (spec C1, C2). */
+    /**
+     * Open an existing container, validating the header (spec C1, C2).
+     *
+     * When the header's partition_table_offset is the
+     * {@see Consts::PT_OFFSET_TRAILER} sentinel, the partition-table head and
+     * chain direction are read from the file {@see Trailer} (located by scanning
+     * backward from the end of the file). Chain traversal is identical in both
+     * directions (follow next_table_offset until 0); the direction only conveys
+     * which end is newest, exposed via {@see chainIsBackward()}.
+     */
     public static function open(StorageInterface $storage): self
     {
         $header = FileHeader::fromBytes($storage->readAt(0, Consts::HEADER_SIZE));
         $self = new self($storage, $header, 16, HashAlgo::Sha256);
 
+        if ($header->partitionTableOffset === Consts::PT_OFFSET_TRAILER) {
+            [$self->tableHead, $self->chainFlags] = self::locateTrailer($storage);
+        } else {
+            $self->tableHead = $header->partitionTableOffset;
+            $self->chainFlags = Consts::CHAIN_FORWARD;
+        }
+
         $blocks = [];
-        $off = $header->partitionTableOffset;
+        $off = $self->tableHead;
         while ($off !== 0) {
             $h = $self->readBlockHeader($off);
             $blocks[] = [
@@ -123,10 +150,71 @@ final class Container
         return $this->storage;
     }
 
-    /** The parsed file header. */
+    /**
+     * The parsed file header. In trailer mode its partition_table_offset holds
+     * the {@see Consts::PT_OFFSET_TRAILER} sentinel; use {@see tableHead()} for
+     * the resolved head.
+     */
     public function header(): FileHeader
     {
         return $this->header;
+    }
+
+    /**
+     * The resolved absolute offset of the partition-table head (0 if empty).
+     * This is the value to follow regardless of header-pointer vs trailer mode.
+     */
+    public function tableHead(): int
+    {
+        return $this->tableHead;
+    }
+
+    /**
+     * Whether the chain is backward-linked (head = newest block,
+     * next_table_offset points at the previous/older block). Classic
+     * header-pointer files are always forward.
+     */
+    public function chainIsBackward(): bool
+    {
+        return ($this->chainFlags & 1) !== 0;
+    }
+
+    /**
+     * Locate the most recent valid file trailer by scanning backward from the
+     * end of the file for the last 20-byte window ending in
+     * {@see Consts::TRAILER_MAGIC} whose recorded head is empty (0) or
+     * references a parseable table block. Bytes after that trailer — an
+     * incomplete or aborted append — are ignored, which gives append-only
+     * writers crash recovery for free. In the clean case the trailer is the
+     * final {@see Consts::TRAILER_SIZE} bytes.
+     *
+     * @return array{0:int,1:int} [head, chainFlags]
+     */
+    private static function locateTrailer(StorageInterface $storage): array
+    {
+        $end = $storage->size();
+        while ($end >= Consts::TRAILER_SIZE) {
+            $start = $end - Consts::TRAILER_SIZE;
+            $window = $storage->readAt($start, Consts::TRAILER_SIZE);
+            if (substr($window, 12, 8) === Consts::TRAILER_MAGIC) {
+                $t = Trailer::fromBytes($window);
+                $head = $t->partitionTableOffset;
+                if ($head === 0) {
+                    return [0, $t->chainFlags];
+                }
+                if ($head >= 0 && $head <= $start - Consts::TABLE_HEADER_SIZE) {
+                    try {
+                        TableBlockHeader::fromBytes($storage->readAt($head, Consts::TABLE_HEADER_SIZE));
+
+                        return [$head, $t->chainFlags];
+                    } catch (PcfException) {
+                        // Spurious magic in an aborted tail; keep scanning.
+                    }
+                }
+            }
+            --$end;
+        }
+        throw PcfException::badTrailer();
     }
 
     // ---- low-level I/O -----------------------------------------------------
@@ -175,7 +263,7 @@ final class Container
     public function entries(): array
     {
         $out = [];
-        $off = $this->header->partitionTableOffset;
+        $off = $this->tableHead;
         while ($off !== 0) {
             [$h, $entries] = $this->readBlock($off);
             foreach ($entries as $e) {
@@ -217,7 +305,7 @@ final class Container
      */
     private function locate(string $uid): array
     {
-        $off = $this->header->partitionTableOffset;
+        $off = $this->tableHead;
         while ($off !== 0) {
             [$h, $entries] = $this->readBlock($off);
             foreach ($entries as $i => $e) {
@@ -376,7 +464,7 @@ final class Container
      */
     public function verify(): void
     {
-        $off = $this->header->partitionTableOffset;
+        $off = $this->tableHead;
         while ($off !== 0) {
             [$h, $entries] = $this->readBlock($off);
             if ($h->tableHashAlgo->verifies()) {
@@ -410,7 +498,7 @@ final class Container
         // Gather live entries and their data, in chain order.
         /** @var array<int, array{0:PartitionEntry,1:string}> $live */
         $live = [];
-        $off = $this->header->partitionTableOffset;
+        $off = $this->tableHead;
         while ($off !== 0) {
             [$h, $entries] = $this->readBlock($off);
             foreach ($entries as $e) {
@@ -481,5 +569,25 @@ final class Container
     public function compactInto(StorageInterface $out): void
     {
         $out->writeAt(0, $this->compactedImage());
+    }
+
+    // ---- trailer mode ------------------------------------------------------
+
+    /**
+     * Convert the file to trailer mode: append a fixed {@see Trailer} at the end
+     * of the file recording the current partition-table head, then overwrite the
+     * header's partition_table_offset with the {@see Consts::PT_OFFSET_TRAILER}
+     * sentinel so the head is located via that trailer. The chain built by this
+     * writer is forward-linked, so the trailer records {@see Consts::CHAIN_FORWARD}.
+     */
+    public function finalizeWithTrailer(): void
+    {
+        $trailer = new Trailer($this->tableHead, Consts::CHAIN_FORWARD);
+        $pos = $this->storage->size();
+        $this->storage->writeAt($pos, $trailer->toBytes());
+        $this->header->partitionTableOffset = Consts::PT_OFFSET_TRAILER;
+        $this->storage->writeAt(0, $this->header->toBytes());
+        $this->chainFlags = Consts::CHAIN_FORWARD;
+        $this->dataEof = $pos + Consts::TRAILER_SIZE;
     }
 }

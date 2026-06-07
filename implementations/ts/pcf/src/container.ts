@@ -28,11 +28,15 @@
  */
 
 import {
+  CHAIN_FORWARD,
   ENTRY_SIZE,
   HEADER_SIZE,
   MAX_ENTRIES_PER_BLOCK,
   NIL_UID,
+  PT_OFFSET_TRAILER,
   TABLE_HEADER_SIZE,
+  TRAILER_MAGIC,
+  TRAILER_SIZE,
   TYPE_RESERVED,
   VERSION_MAJOR,
   VERSION_MINOR,
@@ -58,6 +62,7 @@ import {
   tableHeaderToBytes,
   type TableBlockHeader,
 } from "./table.js";
+import { type Trailer, trailerFromBytes, trailerToBytes } from "./trailer.js";
 
 /** In-memory bookkeeping for one table block (not stored on disk). */
 interface BlockInfo {
@@ -107,6 +112,14 @@ export class Container {
   private dataEof: number;
   private defaultCapacity: number;
   private tableHashAlgo: HashAlgo;
+  /**
+   * Resolved absolute offset of the partition-table head: the header pointer
+   * for a classic file, or the offset from the file trailer when the header
+   * holds {@link PT_OFFSET_TRAILER}. 0 denotes an empty table.
+   */
+  private tableHeadOffset = HEADER_SIZE;
+  /** Chain-direction flags resolved at open time (see {@link Trailer}). */
+  private chainFlags = CHAIN_FORWARD;
 
   private constructor(
     storage: Storage,
@@ -170,15 +183,30 @@ export class Container {
     return new Container(storage, header, blocks, dataEof, cap, tableHashAlgo);
   }
 
-  /** Open an existing container, validating the header (spec C1, C2). */
+  /**
+   * Open an existing container, validating the header (spec C1, C2).
+   *
+   * When the header's `partitionTableOffset` is the {@link PT_OFFSET_TRAILER}
+   * sentinel, the partition-table head and chain direction are read from the
+   * file trailer (located by scanning backward from the end of the file). Chain
+   * traversal is identical in both directions (follow `nextTableOffset` until
+   * 0); the direction only conveys which end is newest, exposed via
+   * {@link Container.chainIsBackward}.
+   */
   static open(storage: Storage): Container {
     const hb = storage.readAt(0, HEADER_SIZE);
     const header = headerFromBytes(hb);
 
     const me = new Container(storage, header, [], 0, 16, HashAlgo.Sha256);
+    if (header.partitionTableOffset === PT_OFFSET_TRAILER) {
+      [me.tableHeadOffset, me.chainFlags] = Container.locateTrailer(storage);
+    } else {
+      me.tableHeadOffset = Number(header.partitionTableOffset);
+      me.chainFlags = CHAIN_FORWARD;
+    }
 
     const blocks: BlockInfo[] = [];
-    let off = Number(header.partitionTableOffset);
+    let off = me.tableHeadOffset;
     while (off !== 0) {
       const [h] = me.readBlock(off);
       blocks.push({
@@ -203,9 +231,73 @@ export class Container {
     return this.storage;
   }
 
-  /** The parsed file header. */
+  /**
+   * The parsed file header. In trailer mode its `partitionTableOffset` holds
+   * the {@link PT_OFFSET_TRAILER} sentinel; use {@link Container.tableHead} for
+   * the resolved head.
+   */
   header(): FileHeader {
     return this.fileHeader;
+  }
+
+  /**
+   * The resolved absolute offset of the partition-table head (0 if empty). This
+   * is the value to follow regardless of header-pointer vs trailer mode.
+   */
+  tableHead(): number {
+    return this.tableHeadOffset;
+  }
+
+  /**
+   * Whether the chain is backward-linked (head = newest block,
+   * `nextTableOffset` points at the previous/older block). Classic
+   * header-pointer files are always forward.
+   */
+  chainIsBackward(): boolean {
+    return (this.chainFlags & 1) !== 0;
+  }
+
+  /**
+   * Locate the most recent valid file trailer by scanning backward from the end
+   * of the file for the last 20-byte window ending in {@link TRAILER_MAGIC}
+   * whose recorded head is empty (0) or references a parseable table block.
+   * Bytes after that trailer — an incomplete or aborted append — are ignored,
+   * which gives append-only writers crash recovery for free. In the clean case
+   * the trailer is the final {@link TRAILER_SIZE} bytes.
+   */
+  private static locateTrailer(storage: Storage): [number, number] {
+    let end = storage.size();
+    while (end >= TRAILER_SIZE) {
+      const start = end - TRAILER_SIZE;
+      const window = storage.readAt(start, TRAILER_SIZE);
+      let magicOk = true;
+      for (let i = 0; i < TRAILER_MAGIC.length; i++) {
+        if (window[12 + i] !== TRAILER_MAGIC[i]) {
+          magicOk = false;
+          break;
+        }
+      }
+      if (magicOk) {
+        const t = trailerFromBytes(window);
+        if (t.partitionTableOffset === 0n) {
+          return [0, t.chainFlags];
+        }
+        const head = Number(t.partitionTableOffset);
+        if (t.partitionTableOffset > 0n && head + TABLE_HEADER_SIZE <= start) {
+          try {
+            tableHeaderFromBytes(storage.readAt(head, TABLE_HEADER_SIZE));
+            return [head, t.chainFlags];
+          } catch (e) {
+            if (!(e instanceof PcfError)) {
+              throw e;
+            }
+            // Spurious magic in an aborted tail; keep scanning.
+          }
+        }
+      }
+      end -= 1;
+    }
+    throw PcfError.badTrailer();
   }
 
   // ---- low-level I/O ------------------------------------------------------
@@ -252,7 +344,7 @@ export class Container {
   /** All live partition entries, in chain order. */
   entries(): PartitionEntry[] {
     const out: PartitionEntry[] = [];
-    let off = Number(this.fileHeader.partitionTableOffset);
+    let off = this.tableHeadOffset;
     while (off !== 0) {
       const [h, entries] = this.readBlock(off);
       out.push(...entries);
@@ -283,7 +375,7 @@ export class Container {
   }
 
   private locate(uid: Uint8Array): [number, number, PartitionEntry] {
-    let off = Number(this.fileHeader.partitionTableOffset);
+    let off = this.tableHeadOffset;
     while (off !== 0) {
       const [h, entries] = this.readBlock(off);
       for (let i = 0; i < entries.length; i++) {
@@ -434,7 +526,7 @@ export class Container {
    * hash, and run the per-entry conformance checks (spec section 12).
    */
   verify(): void {
-    let off = Number(this.fileHeader.partitionTableOffset);
+    let off = this.tableHeadOffset;
     while (off !== 0) {
       const [h, entries] = this.readBlock(off);
       if (verifies(h.tableHashAlgo)) {
@@ -472,7 +564,7 @@ export class Container {
   compactedImage(): Uint8Array {
     // Gather live entries and their data, in chain order.
     const live: Array<{ entry: PartitionEntry; data: Uint8Array }> = [];
-    let off = Number(this.fileHeader.partitionTableOffset);
+    let off = this.tableHeadOffset;
     while (off !== 0) {
       const [h, entries] = this.readBlock(off);
       for (const e of entries) {
@@ -557,6 +649,31 @@ export class Container {
   /** Write a compacted copy of the container to `out`. */
   compactInto(out: Storage): void {
     out.writeAt(0, this.compactedImage());
+  }
+
+  // ---- trailer mode ------------------------------------------------------
+
+  /**
+   * Convert the file to trailer mode: append a fixed trailer at the end of the
+   * file recording the current partition-table head, then overwrite the
+   * header's `partitionTableOffset` with the {@link PT_OFFSET_TRAILER} sentinel
+   * so the head is located via that trailer. The chain built by this writer is
+   * forward-linked, so the trailer records {@link CHAIN_FORWARD}.
+   */
+  finalizeWithTrailer(): void {
+    const trailer: Trailer = {
+      partitionTableOffset: BigInt(this.tableHeadOffset),
+      chainFlags: CHAIN_FORWARD,
+    };
+    const pos = this.storage.size();
+    this.storage.writeAt(pos, trailerToBytes(trailer));
+    this.fileHeader = {
+      ...this.fileHeader,
+      partitionTableOffset: PT_OFFSET_TRAILER,
+    };
+    this.storage.writeAt(0, headerToBytes(this.fileHeader));
+    this.chainFlags = CHAIN_FORWARD;
+    this.dataEof = pos + TRAILER_SIZE;
   }
 }
 

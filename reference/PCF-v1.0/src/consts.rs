@@ -38,3 +38,30 @@ pub const NIL_UID: [u8; UID_SIZE] = [0u8; UID_SIZE];
 /// Maximum number of entries a single table block can hold (`partition_count`
 /// is a `u8`).
 pub const MAX_ENTRIES_PER_BLOCK: u32 = 255;
+
+/// Sentinel value of `partition_table_offset` (header offset 12). When the
+/// header holds this value the partition-table head is not stored in the
+/// header; it is recorded in the fixed [`crate::Trailer`] at the end of the
+/// file (spec section 4 and "File Trailer"). The all-ones value can never be a
+/// real offset, so it is unambiguous.
+pub const PT_OFFSET_TRAILER: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+
+/// Fixed size of the optional file trailer, in bytes.
+pub const TRAILER_SIZE: u64 = 20;
+
+/// Trailer signature, 8 bytes: the file [`MAGIC`] reversed
+/// (`0x1A 0x0A 0x0D 'T' 'R' 'P' 'K' 0x89`). Placed as the final 8 bytes of the
+/// file so a reader can detect and validate the trailer by reading the last
+/// [`TRAILER_SIZE`] bytes.
+pub const TRAILER_MAGIC: [u8; 8] = [0x1A, 0x0A, 0x0D, b'T', b'R', b'P', b'K', 0x89];
+
+/// Chain-direction flag (Trailer `chain_flags` bit 0 clear): the chain is
+/// forward-linked and the head is the first block; `next_table_offset` points
+/// to the next block. This matches the classic header-pointer layout.
+pub const CHAIN_FORWARD: u8 = 0;
+
+/// Chain-direction flag (Trailer `chain_flags` bit 0 set): the chain is
+/// backward-linked and the head (recorded in the Trailer) is the last/newest
+/// block; `next_table_offset` is reinterpreted as the offset of the *previous*
+/// (older) block. Both directions still terminate at 0.
+pub const CHAIN_BACKWARD: u8 = 1;

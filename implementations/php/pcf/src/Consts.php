@@ -54,6 +54,30 @@ final class Consts
      */
     public const MAX_ENTRIES_PER_BLOCK = 255;
 
+    /**
+     * Sentinel value of partition_table_offset (header offset 12) meaning the
+     * partition-table head is recorded in the file {@see Trailer} at the end of
+     * the file rather than in the header. The on-disk value is the all-ones u64
+     * (0xFFFFFFFFFFFFFFFF); on PHP's signed 64-bit integers that is -1, which is
+     * exactly what unpack('P') / pack('P', -1) round-trip.
+     */
+    public const PT_OFFSET_TRAILER = -1;
+
+    /** Fixed size of the optional file trailer, in bytes. */
+    public const TRAILER_SIZE = 20;
+
+    /**
+     * Trailer signature, 8 bytes: the file {@see MAGIC} reversed
+     * (0x1A 0x0A 0x0D 'T' 'R' 'P' 'K' 0x89). Placed as the final 8 bytes of the
+     * file so a reader can detect and validate the trailer at the end.
+     */
+    public const TRAILER_MAGIC = "\x1A\x0A\x0DTRPK\x89";
+
+    /** Chain-direction flag: forward chain, head = first block. */
+    public const CHAIN_FORWARD = 0;
+    /** Chain-direction flag: backward chain, head = last/newest block. */
+    public const CHAIN_BACKWARD = 1;
+
     private function __construct()
     {
     }
