@@ -1,6 +1,6 @@
 [package]
 name = "pcf-sig"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 description = "Reference implementation of PCF-SIG v1.0, the PCF Cryptographic Signatures profile"
 license = "MIT OR Apache-2.0"
@@ -17,7 +17,7 @@ categories = ["cryptography", "encoding"]
 [dependencies]
 # The PCF-SIG profile is layered strictly above PCF v1.0; every byte container
 # operation goes through the reference PCF crate.
-pcf = { path = "../PCF-v1.0", version = "0.0.5" }
+pcf = { path = "../PCF-v1.0", version = "0.0.6" }
 
 # SHA-256 for key fingerprints and for the optional independent re-hash check
 # during verification. Pinned by the PCF crate already; we re-use it here.
