@@ -1,0 +1,60 @@
+{
+  "name": "@kduma-oss/pcf",
+  "version": "0.0.8",
+  "description": "TypeScript implementation of the Partitioned Container Format (PCF) v1.0",
+  "license": "MIT OR Apache-2.0",
+  "author": "Krystian Duma",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kduma-OSS/Partitioned-Container-Format.git",
+    "directory": "implementations/ts/pcf"
+  },
+  "bugs": {
+    "url": "https://github.com/kduma-OSS/Partitioned-Container-Format/issues"
+  },
+  "homepage": "https://github.com/kduma-OSS/Partitioned-Container-Format#readme",
+  "keywords": [
+    "pcf",
+    "partitioned-container-format",
+    "binary",
+    "container",
+    "file-format"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "gen-testvector": "tsx examples/gen-testvector.ts"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@vitest/coverage-v8": "^4.1.8",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.8"
+  }
+}

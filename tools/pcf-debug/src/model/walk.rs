@@ -8,8 +8,8 @@
 //! `Container::open` would reject.
 
 use pcf::{
-    compute_table_hash, FileHeader, HashAlgo, PartitionEntry, TableBlockHeader, ENTRY_SIZE,
-    HEADER_SIZE, TABLE_HEADER_SIZE,
+    compute_table_hash, FileHeader, HashAlgo, PartitionEntry, TableBlockHeader, Trailer,
+    ENTRY_SIZE, HEADER_SIZE, PT_OFFSET_TRAILER, TABLE_HEADER_SIZE, TRAILER_MAGIC, TRAILER_SIZE,
 };
 
 use super::diag::{DiagKind, Diagnostic};
@@ -58,6 +58,35 @@ fn read_array<const N: usize>(data: &[u8], off: usize) -> Option<[u8; N]> {
     data.get(off..off + N)?.try_into().ok()
 }
 
+/// Scan backward from the end of `data` for the last valid file trailer: a
+/// 20-byte window ending in [`TRAILER_MAGIC`] whose recorded head is empty (0)
+/// or references a parseable table block. Returns `(trailer_offset, trailer)`.
+fn locate_trailer(data: &[u8]) -> Option<(u64, Trailer)> {
+    let ts = TRAILER_SIZE as usize;
+    let mut end = data.len();
+    while end >= ts {
+        let start = end - ts;
+        let window: [u8; 20] = data[start..end].try_into().ok()?;
+        if window[12..20] == TRAILER_MAGIC {
+            if let Ok(t) = Trailer::from_bytes(&window) {
+                let head = t.partition_table_offset;
+                let head_ok = head == 0
+                    || (head
+                        .checked_add(TABLE_HEADER_SIZE)
+                        .is_some_and(|p| p as usize <= start)
+                        && read_array::<{ TABLE_HEADER_SIZE as usize }>(data, head as usize)
+                            .and_then(|b| TableBlockHeader::from_bytes(&b).ok())
+                            .is_some());
+                if head_ok {
+                    return Some((start as u64, t));
+                }
+            }
+        }
+        end -= 1;
+    }
+    None
+}
+
 /// Walk `data` (the whole file loaded into memory) and build a structural model.
 ///
 /// When `verify` is false, data and table hashes are not computed (a fast path
@@ -95,7 +124,39 @@ pub fn walk(data: &[u8], verify: bool) -> Walk {
     let mut blocks = Vec::new();
     let mut visited: Vec<u64> = Vec::new();
     if let Some(h) = header {
+        // Resolve the head: a header carrying the trailer sentinel locates its
+        // partition-table head via a file trailer (the last valid one).
         let mut off = h.partition_table_offset;
+        if off == PT_OFFSET_TRAILER {
+            match locate_trailer(data) {
+                Some((toff, t)) => {
+                    let backward = t.chain_flags & 1 != 0;
+                    diagnostics.push(Diagnostic::info(
+                        DiagKind::TrailerResolved {
+                            trailer_offset: toff,
+                            head: t.partition_table_offset,
+                            backward,
+                        },
+                        format!(
+                            "header uses the trailer sentinel; trailer at {toff:#x} -> head {:#x} ({})",
+                            t.partition_table_offset,
+                            if backward { "backward" } else { "forward" }
+                        ),
+                    ));
+                    off = t.partition_table_offset;
+                }
+                None => {
+                    diagnostics.push(Diagnostic::error(
+                        DiagKind::BadHeader {
+                            reason: "trailer sentinel set but no valid trailer found".into(),
+                        },
+                        "header requests trailer-based location but no valid trailer was found"
+                            .to_string(),
+                    ));
+                    off = 0;
+                }
+            }
+        }
         let mut index = 0usize;
         while off != 0 {
             if blocks.len() >= MAX_BLOCKS {
@@ -311,5 +372,46 @@ pub fn algo_name(algo: HashAlgo) -> &'static str {
         17 => "sha512",
         18 => "blake3",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn walk_resolves_trailer_mode_file() {
+        // Build a trailer-mode PCF file and confirm the walk follows the trailer
+        // to the head, finds the block, and emits the informational diagnostic.
+        let bytes = {
+            let mut c = pcf::Container::create(Cursor::new(Vec::new())).unwrap();
+            c.add_partition(1, [1u8; 16], "p", b"hi", 0, HashAlgo::Sha256)
+                .unwrap();
+            c.finalize_with_trailer().unwrap();
+            c.into_storage().into_inner()
+        };
+        let w = walk(&bytes, true);
+        assert_eq!(w.blocks.len(), 1);
+        assert_eq!(w.blocks[0].entries.len(), 1);
+        assert!(w
+            .diagnostics
+            .iter()
+            .any(|d| matches!(d.kind, DiagKind::TrailerResolved { .. })));
+    }
+
+    #[test]
+    fn walk_reports_missing_trailer() {
+        // Header carries the sentinel but there is no valid trailer.
+        let mut bytes = {
+            let mut c = pcf::Container::create(Cursor::new(Vec::new())).unwrap();
+            c.add_partition(1, [1u8; 16], "p", b"x", 0, HashAlgo::Sha256)
+                .unwrap();
+            c.into_storage().into_inner()
+        };
+        bytes[12..20].copy_from_slice(&PT_OFFSET_TRAILER.to_le_bytes());
+        let w = walk(&bytes, true);
+        assert!(w.blocks.is_empty());
+        assert!(w.diagnostics.iter().any(|d| d.message.contains("trailer")));
     }
 }

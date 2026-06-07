@@ -1,4 +1,4 @@
-name: CI (PFS-MS)
+name: CI / Rust (PFS-MS Reference)
 
 on:
   push:
@@ -69,7 +69,7 @@ jobs:
       - name: Inspect generated test vector
         run: |
           ls -l pfs_ms_testvector.bin
-          test "$(wc -c < pfs_ms_testvector.bin)" = "2986"
+          test "$(wc -c < pfs_ms_testvector.bin)" = "3066"
       - uses: actions/upload-artifact@v4
         with:
           name: pfs-ms-testvector

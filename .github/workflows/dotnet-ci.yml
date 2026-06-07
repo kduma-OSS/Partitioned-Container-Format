@@ -1,29 +1,33 @@
-name: .NET CI
+name: CI / .NET
 
 on:
   push:
     branches: [master]
     paths:
-      - 'implementations/dotnet/**'
+      - 'implementations/dotnet/pcf/**'
+      - 'implementations/dotnet/pcf-sig/**'
+      - 'implementations/dotnet/Directory.Build.props'
       - '.github/workflows/dotnet-ci.yml'
   pull_request:
     branches: [master]
     paths:
-      - 'implementations/dotnet/**'
+      - 'implementations/dotnet/pcf/**'
+      - 'implementations/dotnet/pcf-sig/**'
+      - 'implementations/dotnet/Directory.Build.props'
       - '.github/workflows/dotnet-ci.yml'
-
-defaults:
-  run:
-    working-directory: implementations/dotnet
 
 jobs:
   test:
-    name: build & test (${{ matrix.os }})
+    name: build & test ${{ matrix.package }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        package: [pcf, pcf-sig]
+    defaults:
+      run:
+        working-directory: implementations/dotnet/${{ matrix.package }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4

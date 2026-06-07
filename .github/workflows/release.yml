@@ -1,4 +1,4 @@
-name: Release
+name: Release / Publish
 
 on:
   push:
@@ -106,6 +106,19 @@ jobs:
         if: needs.resolve.outputs.dry_run != 'true'
         run: sleep 45
 
+      - name: cargo publish pcf-sig
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pcf-sig --allow-dirty --dry-run
+          else
+            cargo publish -p pcf-sig --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
       - name: cargo publish pfs-ms
         shell: bash
         run: |
@@ -162,13 +175,21 @@ jobs:
       - name: Ensure npm >= 11.5.1 (trusted publishing support)
         run: npm install -g npm@latest
       - run: npm ci
-      - run: npm run build
-      - name: npm publish (OIDC trusted publishing, auto-provenance)
+      - run: npm run build -w @kduma-oss/pcf
+      - run: npm run build -w @kduma-oss/pcf-sig
+      - name: npm publish pcf (OIDC trusted publishing, auto-provenance)
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
-            npm publish --access public --dry-run
+            npm publish -w @kduma-oss/pcf --access public --dry-run
           else
-            npm publish --access public
+            npm publish -w @kduma-oss/pcf --access public
+          fi
+      - name: npm publish pcf-sig
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            npm publish -w @kduma-oss/pcf-sig --access public --dry-run
+          else
+            npm publish -w @kduma-oss/pcf-sig --access public
           fi
 
   publish-nuget:
@@ -180,7 +201,7 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: implementations/dotnet
+        working-directory: implementations/dotnet/pcf
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -212,7 +233,50 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: nuget-package
-          path: implementations/dotnet/out/*.nupkg
+          path: implementations/dotnet/pcf/out/*.nupkg
+
+  publish-nuget-sig:
+    name: Publish KDuma.Pcf.Sig to NuGet
+    needs: [resolve, publish-nuget]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: implementations/dotnet/pcf-sig
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore
+      - name: dotnet pack
+        run: |
+          dotnet pack src/Pcf.Sig/Pcf.Sig.csproj \
+            -c Release \
+            -p:Version='${{ needs.resolve.outputs.version }}' \
+            -o out
+      - name: NuGet login (OIDC trusted publishing)
+        id: nuget-login
+        if: needs.resolve.outputs.dry_run != 'true'
+        uses: NuGet/login@v1
+        with:
+          user: krystianduma
+      - name: dotnet nuget push
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: |
+          dotnet nuget push out/*.nupkg \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key '${{ steps.nuget-login.outputs.NUGET_API_KEY }}' \
+            --skip-duplicate
+      - name: Dry-run note
+        if: needs.resolve.outputs.dry_run == 'true'
+        run: 'echo "Dry-run - skipping dotnet nuget push. Package would be out/*.nupkg."'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nuget-package-sig
+          path: implementations/dotnet/pcf-sig/out/*.nupkg
 
   split-php:
     name: Split PHP to packagist source repo

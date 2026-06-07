@@ -1,0 +1,9 @@
+# --- .NET build artefacts ---
+bin/
+obj/
+out/
+*.user
+
+# --- Generated test vectors ---
+*.bin
+!testdata/canonical.bin

@@ -187,3 +187,31 @@ fn format_size_smoke() {
     assert_eq!(format_size(1024), "1 KiB");
     assert_eq!(format_size(1536), "1.5 KiB");
 }
+
+#[test]
+fn compacts_trailer_mode_input() {
+    // A trailer-mode (sentinel header) input must compact transparently via
+    // Container::open into a valid canonical (header-mode) image.
+    let bytes = {
+        let mut c = Container::create_with(Cursor::new(Vec::new()), 8, HashAlgo::Sha256).unwrap();
+        for i in 1..=3u8 {
+            c.add_partition(
+                i as u32,
+                uid(i),
+                &format!("f{i}"),
+                &[i; 32],
+                4096,
+                HashAlgo::Sha256,
+            )
+            .unwrap();
+        }
+        c.finalize_with_trailer().unwrap();
+        c.into_storage().into_inner()
+    };
+
+    let compacted = compact_bytes(&bytes, true, true).unwrap();
+    // Output is canonical header-mode (smaller; no sentinel/trailer needed).
+    assert!(compacted.len() < bytes.len());
+    let mut c = Container::open(Cursor::new(compacted)).unwrap();
+    assert_eq!(c.entries().unwrap().len(), 3);
+}

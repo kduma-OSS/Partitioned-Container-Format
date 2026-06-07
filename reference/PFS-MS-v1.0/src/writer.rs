@@ -4,8 +4,9 @@
 //! pure serialization primitives ([`pcf::PartitionEntry`],
 //! [`pcf::TableBlockHeader`], [`pcf::compute_table_hash`], [`pcf::FileHeader`]).
 //! It never uses PCF's in-place `Container` writer, because PFS-MS requires
-//! backward-linked Table Blocks and a single in-place header-pointer rewrite at
-//! commit — neither of which the PCF writer performs.
+//! backward-linked Table Blocks and publishes each new head by appending a PCF
+//! [`pcf::Trailer`] at the end of the file (no in-place writes) — neither of
+//! which the PCF writer performs.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -13,8 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use pcf::{
     compute_table_hash, encode_label, Container, FileHeader, HashAlgo, PartitionEntry,
-    TableBlockHeader, ENTRY_SIZE, HEADER_SIZE, MAX_ENTRIES_PER_BLOCK, TABLE_HEADER_SIZE,
-    VERSION_MAJOR, VERSION_MINOR,
+    TableBlockHeader, Trailer, CHAIN_BACKWARD, ENTRY_SIZE, HEADER_SIZE, MAX_ENTRIES_PER_BLOCK,
+    PT_OFFSET_TRAILER, TABLE_HEADER_SIZE, TRAILER_SIZE, VERSION_MAJOR, VERSION_MINOR,
 };
 
 use crate::consts::*;
@@ -136,17 +137,25 @@ pub struct FsWriter<S: Read + Write + Seek> {
 }
 
 impl<S: Read + Write + Seek> FsWriter<S> {
-    /// Create an empty container (no sessions yet). The header points nowhere
-    /// (`partition_table_offset = 0`) until the first session is committed; a
-    /// reader of this transient state sees an empty filesystem.
+    /// Create an empty container (no sessions yet). The header permanently
+    /// holds the PCF trailer sentinel; the partition-table head is published
+    /// through a [`Trailer`] at the end of the file. The initial trailer records
+    /// an empty table (`partition_table_offset = 0`), so a reader of this
+    /// transient state sees an empty filesystem. Committing a session appends a
+    /// fresh trailer rather than rewriting any committed byte (Section 4.3).
     pub fn create(mut storage: S, hash_algo: HashAlgo) -> Result<Self> {
         let header = FileHeader {
             version_major: VERSION_MAJOR,
             version_minor: VERSION_MINOR,
-            partition_table_offset: 0,
+            partition_table_offset: PT_OFFSET_TRAILER,
         };
         storage.seek(SeekFrom::Start(0))?;
         storage.write_all(&header.to_bytes())?;
+        let trailer = Trailer {
+            partition_table_offset: 0,
+            chain_flags: CHAIN_BACKWARD,
+        };
+        storage.write_all(&trailer.to_bytes())?;
         storage.flush()?;
         Ok(Self {
             storage,
@@ -155,7 +164,7 @@ impl<S: Read + Write + Seek> FsWriter<S> {
             prev_head_hash: [0u8; HASH_FIELD_SIZE],
             prev_head_algo: HashAlgo::None,
             next_seq: 1,
-            eof: HEADER_SIZE,
+            eof: HEADER_SIZE + TRAILER_SIZE,
             writer_id: b"pfs-ms-ref/1.0".to_vec(),
             compress: true,
         })
@@ -185,7 +194,7 @@ impl<S: Read + Write + Seek> FsWriter<S> {
     pub fn open(mut storage: S) -> Result<Self> {
         let (head_offset, prev_head_hash, prev_head_algo, next_seq, hash_algo) = {
             let mut c = Container::open(&mut storage)?;
-            let head = c.header().partition_table_offset;
+            let head = c.table_head();
             if head == 0 {
                 (
                     0,
@@ -411,9 +420,17 @@ impl<S: Read + Write + Seek> FsWriter<S> {
 
         // S5: flush data + blocks before publishing.
         self.storage.flush()?;
-        // S6: the single permitted in-place write — the 8-byte header pointer.
-        self.write_at(12, &head_offset.to_le_bytes())?;
-        // S7: flush the header.
+        // S6: publish the new head by APPENDING a fresh trailer at the end of
+        // the file. The header keeps the PT_OFFSET_TRAILER sentinel forever, so
+        // no committed byte is ever rewritten — the commit is purely additive.
+        // The backward chain runs newest -> oldest via next_table_offset.
+        let trailer = Trailer {
+            partition_table_offset: head_offset,
+            chain_flags: CHAIN_BACKWARD,
+        };
+        self.write_at(self.eof, &trailer.to_bytes())?;
+        self.eof += TRAILER_SIZE;
+        // S7: flush the published trailer.
         self.storage.flush()?;
 
         // Advance writer state.
