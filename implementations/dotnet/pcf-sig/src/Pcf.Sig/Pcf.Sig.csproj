@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Pcf.Sig</AssemblyName>
+    <RootNamespace>Pcf.Sig</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Reader/writer for PCF-SIG v1.0, the PCF Cryptographic Signatures profile.</Description>
+
+    <PackageId>KDuma.Pcf.Sig</PackageId>
+    <PackageTags>pcf;pcf-sig;signature;ed25519;cryptography;container</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\pcf\src\Pcf\Pcf.csproj" />
+    <!-- BouncyCastle.Cryptography ships Ed25519 (RFC 8032) and targets
+         netstandard2.0; v2.x is the actively maintained main fork. -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
