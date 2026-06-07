@@ -2,6 +2,7 @@
   "name": "@kduma-oss/implementations-ts",
   "private": true,
   "workspaces": [
-    "pcf"
+    "pcf",
+    "pcf-sig"
   ]
 }

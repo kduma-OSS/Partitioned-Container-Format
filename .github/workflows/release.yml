@@ -106,6 +106,19 @@ jobs:
         if: needs.resolve.outputs.dry_run != 'true'
         run: sleep 45
 
+      - name: cargo publish pcf-sig
+        shell: bash
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            cargo publish -p pcf-sig --allow-dirty --dry-run
+          else
+            cargo publish -p pcf-sig --allow-dirty --token "${{ steps.cargo-auth.outputs.token }}"
+          fi
+
+      - name: Wait for crates.io index
+        if: needs.resolve.outputs.dry_run != 'true'
+        run: sleep 45
+
       - name: cargo publish pfs-ms
         shell: bash
         run: |
@@ -163,12 +176,20 @@ jobs:
         run: npm install -g npm@latest
       - run: npm ci
       - run: npm run build -w @kduma-oss/pcf
-      - name: npm publish (OIDC trusted publishing, auto-provenance)
+      - run: npm run build -w @kduma-oss/pcf-sig
+      - name: npm publish pcf (OIDC trusted publishing, auto-provenance)
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
             npm publish -w @kduma-oss/pcf --access public --dry-run
           else
             npm publish -w @kduma-oss/pcf --access public
+          fi
+      - name: npm publish pcf-sig
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            npm publish -w @kduma-oss/pcf-sig --access public --dry-run
+          else
+            npm publish -w @kduma-oss/pcf-sig --access public
           fi
 
   publish-nuget:

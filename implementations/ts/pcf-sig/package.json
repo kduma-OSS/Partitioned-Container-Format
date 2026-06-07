@@ -1,0 +1,63 @@
+{
+  "name": "@kduma-oss/pcf-sig",
+  "version": "0.0.6",
+  "description": "TypeScript implementation of PCF-SIG v1.0, the PCF Cryptographic Signatures profile",
+  "license": "MIT OR Apache-2.0",
+  "author": "Krystian Duma",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kduma-OSS/Partitioned-Container-Format.git",
+    "directory": "implementations/ts/pcf-sig"
+  },
+  "bugs": {
+    "url": "https://github.com/kduma-OSS/Partitioned-Container-Format/issues"
+  },
+  "homepage": "https://github.com/kduma-OSS/Partitioned-Container-Format#readme",
+  "keywords": [
+    "pcf",
+    "pcf-sig",
+    "signature",
+    "ed25519",
+    "cryptography",
+    "container"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "gen-testvector": "tsx examples/gen-testvector.ts"
+  },
+  "dependencies": {
+    "@kduma-oss/pcf": "^0.0.6",
+    "@noble/ed25519": "^2.1.0",
+    "@noble/hashes": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "@vitest/coverage-v8": "^4.1.8",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.8"
+  }
+}
