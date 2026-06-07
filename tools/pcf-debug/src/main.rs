@@ -160,10 +160,14 @@ fn filter_decode(
                 label: &label,
             };
             let dec = match &opts.decoder {
-                Some(name) => registry
-                    .decode_with(name, &meta, &bytes)
-                    .unwrap_or_else(|| registry.decode(&meta, &bytes)),
-                None => registry.decode(&meta, &bytes),
+                Some(name) => {
+                    let mut d = registry
+                        .decode_with(name, &meta, &bytes)
+                        .unwrap_or_else(|| registry.decode(&meta, &bytes));
+                    pcf_debug::attach_inner_decodes(registry, &meta, &bytes, &mut d);
+                    d
+                }
+                None => pcf_debug::decode_recursive(registry, &meta, &bytes),
             };
             decoded.push((e.uid, dec));
         }

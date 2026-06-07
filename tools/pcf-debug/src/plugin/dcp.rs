@@ -14,7 +14,8 @@ use pcf_dcp::{
 };
 
 use super::{
-    le_u16, le_u32, le_u64, uid_at, Decoded, FieldNode, FieldValue, PartitionDecoder, PartitionMeta,
+    le_u16, le_u32, le_u64, uid_at, Decoded, DecodedChild, FieldNode, FieldValue, PartitionDecoder,
+    PartitionMeta,
 };
 
 fn kind_name(kind: u8) -> &'static str {
@@ -373,6 +374,31 @@ impl PartitionDecoder for DcpContainerDecoder {
             fields,
             warnings,
         }
+    }
+
+    /// The inner partitions of the DCP container, each with its reconstructed
+    /// logical content, so the pipeline can decode them recursively (spec
+    /// Sections 7–8). Defensive: a malformed arena or an inner partition whose
+    /// content cannot be reconstructed (reserved fragment kind, length
+    /// mismatch) is simply omitted — `decode` already surfaces the structural
+    /// detail and any warnings.
+    fn children(&self, _meta: &PartitionMeta, data: &[u8]) -> Vec<DecodedChild> {
+        let arena = match pcf_dcp::Arena::parse(data) {
+            Ok(a) => a,
+            Err(_) => return Vec::new(),
+        };
+        arena
+            .inners()
+            .into_iter()
+            .filter_map(|info| {
+                arena.content(&info.uid).ok().map(|content| DecodedChild {
+                    partition_type: info.partition_type,
+                    uid: info.uid,
+                    label: info.label,
+                    data: content,
+                })
+            })
+            .collect()
     }
 }
 

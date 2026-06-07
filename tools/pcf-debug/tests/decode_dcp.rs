@@ -123,3 +123,89 @@ fn dcp_decoder_matches_by_magic_without_type() {
     };
     assert!(DcpContainerDecoder.matches(&meta, &bytes));
 }
+
+/// Find the first (possibly nested) field whose name contains `needle`.
+fn find_contains<'a>(fields: &'a [FieldNode], needle: &str) -> Option<&'a FieldNode> {
+    for f in fields {
+        if f.name.contains(needle) {
+            return Some(f);
+        }
+        if let Some(hit) = find_contains(&f.children, needle) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+#[test]
+fn recursively_decodes_inner_partition_content() {
+    // The pipeline reconstructs each inner partition's logical content and
+    // decodes it, nesting the result under the DCP container.
+    let report = build_report(CANONICAL, true, &DecoderRegistry::with_builtins());
+    let dcp = find_decoded(&report, "DCP_CONTAINER").unwrap();
+
+    let group = find(&dcp.fields, "decoded inner partitions")
+        .expect("container has a decoded-inner-partitions group");
+    // A's content "Hello, World!" (13 B) and B's "World!" (6 B) are raw text.
+    let a = find_contains(&group.children, "content[A]").unwrap();
+    assert!(a.name.contains("-> RAW"), "A decodes as RAW: {}", a.name);
+    let a_size = find(&a.children, "size").unwrap();
+    assert_eq!(a_size.value, FieldValue::U64(13));
+    let b = find_contains(&group.children, "content[B]").unwrap();
+    let b_size = find(&b.children, "size").unwrap();
+    assert_eq!(b_size.value, FieldValue::U64(6));
+}
+
+#[test]
+fn recursive_decode_routes_inner_to_matching_decoder() {
+    use pcf_dcp::{Arena, Chunker, DcpWriter, HashAlgo};
+
+    // An inner partition typed as PFS_NODE (0xAAAA0001) must route, after
+    // reconstruction, to the PFS node decoder — not the raw fallback.
+    let mut node = b"PFSN".to_vec();
+    node.extend_from_slice(&[0u8; 60]); // pad past the fixed prefix
+    let mut arena = Arena::new();
+    arena
+        .add_inner(
+            0xAAAA_0001,
+            [0x0A; 16],
+            "node",
+            &node,
+            HashAlgo::Sha256,
+            Chunker::Whole,
+        )
+        .unwrap();
+    let mut w = DcpWriter::new();
+    w.add_container([0xDC; 16], "dcp", arena).unwrap();
+    let image = w.to_image().unwrap();
+
+    let report = build_report(&image, true, &DecoderRegistry::with_builtins());
+    let dcp = find_decoded(&report, "DCP_CONTAINER").unwrap();
+    let group = find(&dcp.fields, "decoded inner partitions").unwrap();
+    let child = find_contains(&group.children, "content[node]").unwrap();
+    assert!(
+        child.name.contains("-> PFS_NODE"),
+        "inner routed to PFS decoder, got: {}",
+        child.name
+    );
+    // The container's own warnings are unaffected by the inner's warnings,
+    // which are nested under the child instead.
+    assert!(
+        dcp.warnings.is_empty(),
+        "container warnings: {:?}",
+        dcp.warnings
+    );
+}
+
+#[test]
+fn registry_reports_no_children_for_leaf_partitions() {
+    // A non-container partition yields no children (default trait impl).
+    let uid = [0u8; 16];
+    let meta = PartitionMeta {
+        partition_type: 0xFFFF_FFFF,
+        uid: &uid,
+        label: "raw",
+    };
+    let registry = DecoderRegistry::with_builtins();
+    assert!(registry.children(&meta, b"plain bytes").is_empty());
+}
