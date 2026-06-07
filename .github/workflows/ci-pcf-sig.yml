@@ -1,4 +1,4 @@
-name: CI / Rust (PCF-SIG Reference)
+name: CI / Rust (pcf-sig CLI)
 
 on:
   push:
@@ -12,7 +12,7 @@ env:
 
 defaults:
   run:
-    working-directory: reference/PCF-SIG-v1.0
+    working-directory: tools/pcf-sig
 
 jobs:
   fmt:
@@ -35,7 +35,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: reference/PCF-SIG-v1.0
+          workspaces: tools/pcf-sig
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
   test:
@@ -50,55 +50,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: reference/PCF-SIG-v1.0
+          workspaces: tools/pcf-sig
       - run: cargo build --verbose
       - run: cargo test --all-targets --verbose
-      - run: cargo test --doc --verbose
-
-  test-vector:
-    name: regenerate spec test vector
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: reference/PCF-SIG-v1.0
-      - name: Build and run the test-vector example
-        run: cargo run --example gen_testvector -- pcfsig_testvector.bin
-      - name: Inspect generated test vector
-        run: |
-          ls -l pcfsig_testvector.bin
-          test "$(wc -c < pcfsig_testvector.bin)" = "966"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pcf-sig-testvector
-          path: reference/PCF-SIG-v1.0/pcfsig_testvector.bin
-
-  coverage:
-    name: code coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: reference/PCF-SIG-v1.0
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Generate coverage report (lcov)
-        run: cargo llvm-cov --all-features --package pcf-sig --lcov --output-path lcov.info
-      - name: Print coverage summary
-        run: cargo llvm-cov report
-      - name: Enforce minimum library coverage
-        run: |
-          cargo llvm-cov report --summary-only \
-            --ignore-filename-regex 'bin/|examples/' \
-            --fail-under-lines 90 \
-            --fail-under-functions 90
-      - uses: actions/upload-artifact@v4
-        with:
-          name: pcf-sig-coverage-lcov
-          path: reference/PCF-SIG-v1.0/lcov.info

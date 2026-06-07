@@ -6,4 +6,5 @@ members = [
     "reference/PCF-SIG-v1.0",
     "tools/pcf-debug",
     "tools/pcf-compact",
+    "tools/pcf-sig",
 ]

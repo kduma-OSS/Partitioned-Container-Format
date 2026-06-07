@@ -88,6 +88,7 @@ jobs:
         run: |
           cargo build --release --target ${{ matrix.target }} -p pcf-debug
           cargo build --release --target ${{ matrix.target }} -p pcf-compact
+          cargo build --release --target ${{ matrix.target }} -p pcf-sig-cli --bin pcf-sig
           cargo build --release --target ${{ matrix.target }} -p pfs-ms --bin pfs
 
       - name: Build (macOS universal2)
@@ -97,6 +98,7 @@ jobs:
           for t in ${{ matrix.macos-targets }}; do
             cargo build --release --target "$t" -p pcf-debug
             cargo build --release --target "$t" -p pcf-compact
+            cargo build --release --target "$t" -p pcf-sig-cli --bin pcf-sig
             cargo build --release --target "$t" -p pfs-ms --bin pfs
           done
           mkdir -p target/universal2-apple-darwin/release
@@ -106,11 +108,15 @@ jobs:
           lipo -create -output target/universal2-apple-darwin/release/pcf-compact \
             target/x86_64-apple-darwin/release/pcf-compact \
             target/aarch64-apple-darwin/release/pcf-compact
+          lipo -create -output target/universal2-apple-darwin/release/pcf-sig \
+            target/x86_64-apple-darwin/release/pcf-sig \
+            target/aarch64-apple-darwin/release/pcf-sig
           lipo -create -output target/universal2-apple-darwin/release/pfs \
             target/x86_64-apple-darwin/release/pfs \
             target/aarch64-apple-darwin/release/pfs
           file target/universal2-apple-darwin/release/pcf-debug
           file target/universal2-apple-darwin/release/pcf-compact
+          file target/universal2-apple-darwin/release/pcf-sig
           file target/universal2-apple-darwin/release/pfs
 
       - name: Stage and archive (unix)
@@ -120,7 +126,7 @@ jobs:
           VERSION='${{ needs.resolve-version.outputs.version }}'
           TARGET='${{ matrix.target }}'
           mkdir -p staging
-          for bin in pcf-debug pcf-compact pfs; do
+          for bin in pcf-debug pcf-compact pcf-sig pfs; do
             STAGE="staging/${bin}-${VERSION}-${TARGET}"
             mkdir -p "$STAGE"
             cp "target/${TARGET}/release/${bin}" "$STAGE/${bin}"
@@ -136,7 +142,7 @@ jobs:
           $version = '${{ needs.resolve-version.outputs.version }}'
           $target  = '${{ matrix.target }}'
           New-Item -ItemType Directory -Force staging | Out-Null
-          foreach ($bin in @('pcf-debug', 'pcf-compact', 'pfs')) {
+          foreach ($bin in @('pcf-debug', 'pcf-compact', 'pcf-sig', 'pfs')) {
             $stage = "staging/$bin-$version-$target"
             New-Item -ItemType Directory -Force $stage | Out-Null
             Copy-Item "target/$target/release/$bin.exe" "$stage/$bin.exe"
