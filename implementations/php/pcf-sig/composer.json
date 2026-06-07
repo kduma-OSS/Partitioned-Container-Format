@@ -1,0 +1,48 @@
+{
+    "name": "kduma/pcf-sig",
+    "description": "PHP implementation of PCF-SIG v1.0, the PCF Cryptographic Signatures profile",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["pcf", "pcf-sig", "signature", "ed25519", "cryptography", "container"],
+    "homepage": "https://github.com/kduma-OSS/Partitioned-Container-Format",
+    "support": {
+        "issues": "https://github.com/kduma-OSS/Partitioned-Container-Format/issues",
+        "source": "https://github.com/kduma-OSS-splits/PHP-PCF-SIG-lib"
+    },
+    "require": {
+        "php": ">=8.1",
+        "ext-hash": "*",
+        "ext-sodium": "*",
+        "kduma/pcf": "^0.0.6"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5 || ^11.0"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../pcf",
+            "options": {
+                "symlink": true,
+                "versions": { "kduma/pcf": "0.0.6" }
+            }
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Kduma\\PCFSIG\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kduma\\PCFSIG\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "gen-testvector": "php examples/gen_testvector.php"
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

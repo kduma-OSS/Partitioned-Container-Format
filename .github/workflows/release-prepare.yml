@@ -75,17 +75,29 @@ jobs:
           NEW='${{ steps.version.outputs.version }}'
           sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' reference/PCF-v1.0/Cargo.toml
           sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' reference/PFS-MS-v1.0/Cargo.toml
+          sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' reference/PCF-SIG-v1.0/Cargo.toml
           sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' tools/pcf-debug/Cargo.toml
           sed -i 's/^version = "[^"]*"/version = "'"$NEW"'"/' tools/pcf-compact/Cargo.toml
           # path-dep version pins on pcf
           sed -i 's|pcf = { path = "\.\./PCF-v1.0", version = "[^"]*" }|pcf = { path = "../PCF-v1.0", version = "'"$NEW"'" }|' reference/PFS-MS-v1.0/Cargo.toml
+          sed -i 's|pcf = { path = "\.\./PCF-v1.0", version = "[^"]*" }|pcf = { path = "../PCF-v1.0", version = "'"$NEW"'" }|' reference/PCF-SIG-v1.0/Cargo.toml
           sed -i 's|pcf = { path = "\.\./\.\./reference/PCF-v1.0", version = "[^"]*" }|pcf = { path = "../../reference/PCF-v1.0", version = "'"$NEW"'" }|' tools/pcf-debug/Cargo.toml
+          sed -i 's|pcf-sig = { path = "\.\./\.\./reference/PCF-SIG-v1.0", version = "[^"]*" }|pcf-sig = { path = "../../reference/PCF-SIG-v1.0", version = "'"$NEW"'" }|' tools/pcf-debug/Cargo.toml
           sed -i 's|pcf = { path = "\.\./\.\./reference/PCF-v1.0", version = "[^"]*" }|pcf = { path = "../../reference/PCF-v1.0", version = "'"$NEW"'" }|' tools/pcf-compact/Cargo.toml
 
       - name: Bump TypeScript packages
         shell: bash
         working-directory: implementations/ts
         run: npm version '${{ steps.version.outputs.version }}' -ws --no-git-tag-version --allow-same-version
+
+      - name: Bump PHP pcf-sig dependency on pcf
+        shell: bash
+        run: |
+          NEW='${{ steps.version.outputs.version }}'
+          # Bump the require constraint (caret) and the path-repo version pin
+          # (plain semver inside the versions object).
+          sed -i 's|"kduma/pcf": "\^[^"]*"|"kduma/pcf": "^'"$NEW"'"|' implementations/php/pcf-sig/composer.json
+          sed -i 's|"versions": { "kduma/pcf": "[^"]*" }|"versions": { "kduma/pcf": "'"$NEW"'" }|' implementations/php/pcf-sig/composer.json
 
       - name: Bump .NET Directory.Build.props
         shell: bash

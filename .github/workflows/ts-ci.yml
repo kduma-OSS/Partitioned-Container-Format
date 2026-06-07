@@ -23,6 +23,7 @@ jobs:
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
       - run: npm run build -w @kduma-oss/pcf
+      - run: npm run build -w @kduma-oss/pcf-sig
 
   test:
     name: test (${{ matrix.os }})
@@ -40,6 +41,10 @@ jobs:
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
       - run: npm test -w @kduma-oss/pcf
+      # pcf-sig imports the compiled @kduma-oss/pcf dist/; build pcf first
+      # so the workspace dependency resolves before vitest runs.
+      - run: npm run build -w @kduma-oss/pcf
+      - run: npm test -w @kduma-oss/pcf-sig
 
   test-vector:
     name: regenerate spec test vector
@@ -52,16 +57,26 @@ jobs:
           cache: npm
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
-      - name: Build and run the test-vector example
+      - name: Build PCF (required before pcf-sig can import @kduma-oss/pcf)
+        run: npm run build -w @kduma-oss/pcf
+      - name: Build and run the PCF test-vector example
         run: npm run gen-testvector -w @kduma-oss/pcf -- pcf_testvector.bin
-      - name: Inspect generated test vector
+      - name: Inspect PCF test vector
         run: |
           ls -l pcf/pcf_testvector.bin
           test "$(wc -c < pcf/pcf_testvector.bin)" = "395"
+      - name: Build and run the PCF-SIG test-vector example
+        run: npm run gen-testvector -w @kduma-oss/pcf-sig -- pcfsig_testvector.bin
+      - name: Inspect PCF-SIG test vector
+        run: |
+          ls -l pcf-sig/pcfsig_testvector.bin
+          test "$(wc -c < pcf-sig/pcfsig_testvector.bin)" = "966"
       - uses: actions/upload-artifact@v4
         with:
           name: pcf-testvector-ts
-          path: implementations/ts/pcf/pcf_testvector.bin
+          path: |
+            implementations/ts/pcf/pcf_testvector.bin
+            implementations/ts/pcf-sig/pcfsig_testvector.bin
 
   coverage:
     name: code coverage
@@ -74,9 +89,15 @@ jobs:
           cache: npm
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
-      - name: Generate coverage report (enforces >=95% line / 100% function)
+      - name: Generate PCF coverage report (enforces >=95% line / 100% function)
         run: npm run coverage -w @kduma-oss/pcf
+      - name: Build PCF (required before pcf-sig can import @kduma-oss/pcf)
+        run: npm run build -w @kduma-oss/pcf
+      - name: Generate PCF-SIG coverage report (enforces >=90% line / 100% function)
+        run: npm run coverage -w @kduma-oss/pcf-sig
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov-ts
-          path: implementations/ts/pcf/coverage/lcov.info
+          path: |
+            implementations/ts/pcf/coverage/lcov.info
+            implementations/ts/pcf-sig/coverage/lcov.info
