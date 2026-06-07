@@ -1,0 +1,171 @@
+name: CI / Cross-Port Interop
+
+# Runs every PCF-SIG writer (Rust reference + .NET + PHP + TypeScript) and
+# asserts all four produce the byte-identical canonical 966-byte signed
+# container. The reference also checks the shipped testdata/canonical.bin in
+# each port directory (covered by the Rust workspace test
+# `cross_port_testdata`), but this job goes one step further: it regenerates
+# each writer's output from scratch and compares the bytes, catching writer-
+# side drift that would silently pass if a port happened to keep its own
+# committed testdata in sync with itself but produced different bytes at run
+# time.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'reference/PCF-SIG-v1.0/**'
+      - 'implementations/**/pcf-sig/**'
+      - 'implementations/ts/package.json'
+      - 'implementations/ts/package-lock.json'
+      - 'implementations/dotnet/Directory.Build.props'
+      - '.github/workflows/cross-port-interop.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'reference/PCF-SIG-v1.0/**'
+      - 'implementations/**/pcf-sig/**'
+      - 'implementations/ts/package.json'
+      - 'implementations/ts/package-lock.json'
+      - 'implementations/dotnet/Directory.Build.props'
+      - '.github/workflows/cross-port-interop.yml'
+
+# Expected SHA-256 of the canonical 966-byte vector. Pinned here so the job
+# fails loudly if every writer drifts together (e.g. a regenerated reference
+# that propagated to all four ports but is no longer the spec test vector).
+env:
+  EXPECTED_SHA256: b158e2f5b160d72cea3226af2041f8d18aa75b3db6cb85faeca5df7879871307
+
+jobs:
+  cross-port-byte-exact:
+    name: all writers produce identical bytes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: hash, mbstring, sodium
+          coverage: none
+          tools: composer:v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # ---- Rust reference writer --------------------------------------------
+      - name: Generate Rust reference vector
+        run: |
+          cargo run -p pcf-sig --example gen_testvector -- /tmp/rust.bin
+
+      # ---- TypeScript writer ------------------------------------------------
+      - name: Install npm deps and build pcf
+        working-directory: implementations/ts
+        run: |
+          npm ci
+          npm run build -w @kduma-oss/pcf
+      - name: Generate TS vector
+        working-directory: implementations/ts
+        run: |
+          npm run gen-testvector -w @kduma-oss/pcf-sig -- /tmp/ts.bin
+
+      # ---- PHP writer -------------------------------------------------------
+      - name: Install composer deps
+        working-directory: implementations/php/pcf-sig
+        run: composer install --prefer-dist --no-progress --no-interaction
+      - name: Generate PHP vector
+        working-directory: implementations/php/pcf-sig
+        run: php examples/gen_testvector.php /tmp/php.bin
+
+      # ---- .NET writer ------------------------------------------------------
+      # The PCF-SIG .NET tests already include a CanonicalVectorTests suite
+      # that asserts the writer matches the shipped testdata; here we build a
+      # tiny CLI on the fly that writes its output to a path so the bytes can
+      # be compared with the other three.
+      - name: Generate .NET vector
+        run: |
+          mkdir -p /tmp/dotnet-gen
+          cat > /tmp/dotnet-gen/GenTestVector.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net8.0</TargetFramework>
+              <Nullable>disable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <ProjectReference Include="$(GITHUB_WORKSPACE)/implementations/dotnet/pcf-sig/src/Pcf.Sig/Pcf.Sig.csproj" />
+            </ItemGroup>
+          </Project>
+          EOF
+          cat > /tmp/dotnet-gen/Program.cs <<'EOF'
+          using System;
+          using System.IO;
+          using System.Text;
+          using Pcf;
+          using Pcf.Sig;
+          var seed = new byte[32];
+          for (int i = 0; i < 32; i++) seed[i] = (byte)i;
+          var signer = SigningMaterial.Ed25519FromSeed(seed);
+          var ms = new MemoryStream();
+          var c = Container.CreateWith(ms, 8, HashAlgo.Sha256);
+          var alphaUid = new byte[16]; for (int i = 0; i < 16; i++) alphaUid[i] = 0x11;
+          var sigUid = new byte[16]; for (int i = 0; i < 16; i++) sigUid[i] = 0x33;
+          var keyUid = new byte[16]; for (int i = 0; i < 16; i++) keyUid[i] = 0x22;
+          c.AddPartition(0x10, alphaUid, "alpha", Encoding.UTF8.GetBytes("Hello, PCF-SIG!"), 0, HashAlgo.Sha256);
+          SignPartitions.Run(c, signer, new[] { alphaUid }, sigUid, keyUid, 0, "pcfsig", "pcfkey");
+          File.WriteAllBytes(args[0], c.CompactedImage());
+          EOF
+          dotnet run --project /tmp/dotnet-gen/GenTestVector.csproj -c Release -- /tmp/dotnet.bin
+
+      # ---- Compare ----------------------------------------------------------
+      - name: All four writers agree on byte-exact output
+        run: |
+          set -euo pipefail
+          ls -l /tmp/rust.bin /tmp/ts.bin /tmp/php.bin /tmp/dotnet.bin
+          declare -A digests
+          for f in /tmp/rust.bin /tmp/ts.bin /tmp/php.bin /tmp/dotnet.bin; do
+            d=$(sha256sum "$f" | awk '{print $1}')
+            echo "$f -> $d"
+            digests[$f]=$d
+          done
+          # Every digest must equal EXPECTED_SHA256
+          fail=0
+          for f in /tmp/rust.bin /tmp/ts.bin /tmp/php.bin /tmp/dotnet.bin; do
+            if [ "${digests[$f]}" != "$EXPECTED_SHA256" ]; then
+              echo "::error::$f sha256 = ${digests[$f]} (expected $EXPECTED_SHA256)"
+              fail=1
+            fi
+          done
+          # And byte-for-byte equal to each other (paranoia — sha256 collisions
+          # below 2^128 work are not credible, but cmp is free).
+          for f in /tmp/ts.bin /tmp/php.bin /tmp/dotnet.bin; do
+            if ! cmp -s /tmp/rust.bin "$f"; then
+              echo "::error::$f differs from /tmp/rust.bin"
+              fail=1
+            fi
+          done
+          if [ "$fail" != "0" ]; then
+            echo "Cross-port writer interop FAILED"
+            exit 1
+          fi
+          echo "All four writers produced sha256 = $EXPECTED_SHA256"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-port-vectors
+          path: |
+            /tmp/rust.bin
+            /tmp/ts.bin
+            /tmp/php.bin
+            /tmp/dotnet.bin
