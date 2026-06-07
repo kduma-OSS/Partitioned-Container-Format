@@ -75,6 +75,22 @@ for report in verify_all_with_recheck(&mut c)? {
 # Ok::<(), pcf_sig::Error>(())
 ```
 
+## Command-line tool
+
+A ready-made CLI lives in [`tools/pcf-sig`](../../tools/pcf-sig) (`pcf-sig`),
+built on this crate:
+
+```sh
+pcf-sig keygen id.key id.pub          # 32-byte raw Ed25519 seed + public key
+pcf-sig sign   file.pcf --key id.key  # incremental by default; --resign to redo
+pcf-sig verify file.pcf --key id.pub  # per-signature / per-partition report
+pcf-sig keys   file.pcf               # list embedded PCFSIG_KEY fingerprints
+```
+
+A PFS-MS archive is a PCF file, so `pcf-sig verify`/`keys` work on it directly;
+to *sign* a PFS-MS file use `pfs sign`, which commits the signature as a PFS
+session (see [`reference/PFS-MS-v1.0`](../PFS-MS-v1.0)).
+
 ## Trust patterns
 
 The profile describes one non-X.509 way for an application to express trust

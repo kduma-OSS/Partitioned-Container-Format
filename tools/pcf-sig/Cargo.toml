@@ -1,0 +1,40 @@
+[package]
+name = "pcf-sig-cli"
+version = "0.0.8"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+description = "Command-line tool to sign and verify Partitioned Container Format (PCF) files with PCF-SIG signatures"
+repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+readme = "README.md"
+keywords = ["pcf", "pcf-sig", "ed25519", "signature", "container"]
+categories = ["command-line-utilities", "cryptography"]
+
+# `pcf-sig-cli` is a thin command-line wrapper over the `pcf-sig` reference
+# library. The orchestration logic (partition selection, incremental signing,
+# report formatting) lives in the library half so the `pfs` CLI can delegate to
+# exactly the same behaviour instead of duplicating it.
+
+[lib]
+name = "pcf_sig_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pcf-sig"
+path = "src/main.rs"
+
+[dependencies]
+# Generic PCF container access (enumerate partitions, read/append).
+pcf = { path = "../../reference/PCF-v1.0", version = "0.0.8" }
+
+# The PCF-SIG signing/verification primitives this tool drives.
+pcf-sig = { path = "../../reference/PCF-SIG-v1.0", version = "0.0.8" }
+
+# UUIDv7 for the uids of newly written PCFSIG_SIG / PCFSIG_KEY partitions
+# (consistent with the recommendation in both the PCF and PFS-MS specs).
+uuid = { version = "1", features = ["v7"] }
+
+# 32 random bytes for the Ed25519 secret seed produced by `keygen`. Pure-Rust,
+# no C dependencies; already present in the workspace dependency tree via uuid.
+getrandom = "0.4"
