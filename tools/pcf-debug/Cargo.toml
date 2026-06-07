@@ -18,3 +18,4 @@ path = "src/main.rs"
 [dependencies]
 pcf = { path = "../../reference/PCF-v1.0", version = "0.0.8" }
 pcf-sig = { path = "../../reference/PCF-SIG-v1.0", version = "0.0.8" }
+pcf-dcp = { path = "../../reference/PCF-DCP-v1.0", version = "0.0.8" }

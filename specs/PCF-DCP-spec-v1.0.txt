@@ -29,6 +29,7 @@ Table of Contents
    1.  Introduction
    2.  Relationship to PCF
        2.1  Relationship to PCF-SIG
+       2.2  Compatibility with the PCF File Trailer
    3.  Conventions and Terminology
        3.1  Requirement Keywords
        3.2  Terminology
@@ -194,6 +195,38 @@ Table of Contents
    Promotion MUST therefore be a MOVE -- the inner entry is removed as the
    top-level entry is added -- never a copy that would leave two live entries
    sharing a uid.
+
+2.2  Compatibility with the PCF File Trailer
+
+   PCF v1.0 defines an OPTIONAL File Trailer: when the PCF File Header's
+   partition_table_offset holds the all-ones sentinel, the top-level
+   partition-table head is recorded in a fixed trailer at the end of the file
+   (and the table chain MAY be backward-linked). This lets append-only writers
+   commit without rewriting the header. PCF-DCP is fully compatible with both
+   header-pointer and trailer-mode host files:
+
+      - A DCP-aware Reader MUST locate the top-level table head through the PCF
+        layer (which resolves the trailer when present); it MUST NOT assume the
+        File Header's partition_table_offset is a real offset. In trailer mode
+        that field is the sentinel, not the table position. Once the top-level
+        partitions are enumerated, locating and reading a DCP container is
+        unchanged: the container is one ordinary PCF partition.
+
+      - Whether the host file uses a header pointer or a trailer is invisible to
+        the arena: the DCP Header, Inner Table Block chain, and Fragment Tables
+        are addressed by ARENA-RELATIVE offsets within the container's data
+        (Section 3.3) and never reference the enclosing file's layout.
+
+      - The arena itself does NOT contain a PCF trailer. The inner table is
+        always located by inner_table_offset in the DCP Header (Section 6); the
+        inner Table Block chain is forward-linked (next_table_offset), because a
+        DCP Writer rewrites the arena as a whole (Section 4.3, 10.3) and so has
+        no append-only motive to invert it.
+
+   A Writer MAY publish a finished DCP file in trailer mode (e.g. when the DCP
+   file is itself appended into a larger append-only host); doing so changes no
+   arena byte and leaves every inner partition, data_hash, and signature intact.
+   The test vector in Section 17 is given in classic header-pointer form.
 
 
 -------------------------------------------------------------------------------
@@ -1090,7 +1123,7 @@ Table of Contents
    ----  DCP Header (arena 0x000 / file 0x00EB, 24 bytes) ------------
    00EB  50 44 43 50                                      dcp_magic = "PDCP"
    00EF  01                                               profile_version_major = 1
-   00F0  01                                               profile_version_minor = 0
+   00F0  00                                               profile_version_minor = 0
    00F1  00 00                                            flags = 0
    00F3  6D 00 00 00 00 00 00 00                          inner_table_offset = 109 (arena-rel)
    00FB  D1 01 00 00 00 00 00 00                          arena_used = 465 (arena-rel)
@@ -1175,7 +1208,7 @@ Table of Contents
    00C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
    00D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
    00E0  00 00 00 00 00 00 00 00 00 00 00 50 44 43 50 01  ...........PDCP.
-   00F0  01 00 00 6D 00 00 00 00 00 00 00 D1 01 00 00 00  ...m............
+   00F0  00 00 00 6D 00 00 00 00 00 00 00 D1 01 00 00 00  ...m............
    0100  00 00 00 48 65 6C 6C 6F 2C 20 57 6F 72 6C 64 21  ...Hello, World!
    0110  00 00 00 00 00 00 00 00 02 18 00 00 00 00 00 00  ................
    0120  00 07 00 00 00 00 00 00 00 01 00 1F 00 00 00 00  ................

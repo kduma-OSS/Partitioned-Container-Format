@@ -11,10 +11,12 @@
 //! (shared-library) backend could be added behind a feature without reworking
 //! any decoder.
 
+mod dcp;
 mod pcfsig;
 mod pfs;
 mod raw;
 
+pub use dcp::DcpContainerDecoder;
 pub use pcfsig::{PcfSigKeyDecoder, PcfSigSignatureDecoder};
 pub use pfs::{PfsNodeDecoder, PfsSessionDecoder};
 pub use raw::RawDecoder;
@@ -141,6 +143,7 @@ impl DecoderRegistry {
                 Box::new(PfsSessionDecoder),
                 Box::new(PcfSigKeyDecoder),
                 Box::new(PcfSigSignatureDecoder),
+                Box::new(DcpContainerDecoder),
                 Box::new(RawDecoder),
             ],
         }

@@ -135,3 +135,30 @@ jobs:
       - run: cargo clippy -p pcf-compact --all-targets -- -D warnings
       - run: cargo build -p pcf-compact --verbose
       - run: cargo test -p pcf-compact --verbose
+
+  pcf-dcp:
+    name: pcf-dcp profile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt -p pcf-dcp -- --check
+      - run: cargo clippy -p pcf-dcp --all-targets -- -D warnings
+      - run: cargo build -p pcf-dcp --verbose
+      - run: cargo test -p pcf-dcp --verbose
+      - name: Regenerate the spec test vector
+        run: cargo run -p pcf-dcp --example gen_testvector -- pcf_dcp_testvector.bin
+      - name: Inspect generated test vector (spec Section 17 is 700 bytes)
+        run: |
+          ls -l pcf_dcp_testvector.bin
+          test "$(wc -c < pcf_dcp_testvector.bin)" = "700"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pcf-dcp-testvector
+          path: pcf_dcp_testvector.bin
