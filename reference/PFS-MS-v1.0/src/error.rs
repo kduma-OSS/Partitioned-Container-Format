@@ -13,6 +13,9 @@ pub enum Error {
     Io(std::io::Error),
     /// A PCF container-level error (bad magic, hash mismatch, …).
     Pcf(pcf::Error),
+    /// A PCF-SIG signing error while committing a signature session
+    /// (see [`crate::sign_archive`]).
+    Signature(pcf_sig::Error),
 
     /// A Node Record was structurally invalid (bad magic/version/kind, a
     /// reserved flag bit set, an out-of-range or illegal name, a truncated
@@ -70,6 +73,7 @@ impl fmt::Display for Error {
         match self {
             Error::Io(e) => write!(f, "io error: {e}"),
             Error::Pcf(e) => write!(f, "pcf error: {e}"),
+            Error::Signature(e) => write!(f, "signature error: {e}"),
             Error::MalformedNode(m) => write!(f, "malformed node record: {m}"),
             Error::MalformedSession(m) => write!(f, "malformed session record: {m}"),
             Error::BrokenChain(m) => write!(f, "broken session chain: {m}"),
@@ -105,5 +109,11 @@ impl From<std::io::Error> for Error {
 impl From<pcf::Error> for Error {
     fn from(e: pcf::Error) -> Self {
         Error::Pcf(e)
+    }
+}
+
+impl From<pcf_sig::Error> for Error {
+    fn from(e: pcf_sig::Error) -> Self {
+        Error::Signature(e)
     }
 }

@@ -18,7 +18,15 @@
 //! pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]
 //! pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]
 //! pfs compact <file> [<out>]   # rebuild as one fresh session (discards history)
+//! pfs keygen     <priv_out> <pub_out>
+//! pfs sign       <file> --key <priv> [--resign]
+//! pfs verify-sig <file> [--key <trusted_pub>] [--no-recheck]
 //! ```
+//!
+//! Every mutating subcommand also accepts `--key <priv>` to auto-sign the file
+//! after its session is committed. Signing is incremental: only the partitions
+//! added by that operation are covered, so the file accumulates one PCF-SIG
+//! signature per session.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -64,6 +72,9 @@ fn run(args: &[String]) -> CliResult {
         "update" => cmd_update(rest),
         "extract" => cmd_extract(rest),
         "compact" => cmd_compact(rest),
+        "keygen" => cmd_keygen(rest),
+        "sign" => cmd_sign(rest),
+        "verify-sig" => cmd_verify_sig(rest),
         "" | "help" | "-h" | "--help" => {
             print_usage();
             Ok(())
@@ -74,7 +85,7 @@ fn run(args: &[String]) -> CliResult {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  pfs mkfs    <file>\n  pfs mkdir   <file> <path>\n  pfs put     <file> <path> [<src|->] [--store]\n  pfs mv      <file> <src> <dst>\n  pfs rm      <file> <path>\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]\n  pfs compact <file> [<out>]"
+        "usage:\n  pfs mkfs    <file> [--key <priv>]\n  pfs mkdir   <file> <path> [--key <priv>]\n  pfs put     <file> <path> [<src|->] [--store] [--key <priv>]\n  pfs mv      <file> <src> <dst> [--key <priv>]\n  pfs rm      <file> <path> [--key <priv>]\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata] [--key <priv>]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata] [--key <priv>]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]\n  pfs compact <file> [<out>]\n  pfs keygen     <priv_out> <pub_out>\n  pfs sign       <file> --key <priv> [--resign]\n  pfs verify-sig <file> [--key <trusted_pub>] [--no-recheck]\n\nmutating commands accept --key <priv> to auto-sign after the commit."
     );
 }
 
@@ -82,6 +93,31 @@ fn arg<'a>(args: &'a [String], i: usize, what: &str) -> Result<&'a str, String> 
     args.get(i)
         .map(|s| s.as_str())
         .ok_or_else(|| format!("missing argument: {what}"))
+}
+
+/// Fetch the `i`-th positional from a [`Parsed`] command line.
+fn pos<'a>(p: &'a Parsed, i: usize, what: &str) -> Result<&'a str, String> {
+    p.positional
+        .get(i)
+        .map(|s| s.as_str())
+        .ok_or_else(|| format!("missing argument: {what}"))
+}
+
+/// If a mutating command was given `--key <priv>`, sign the file after its
+/// session has been committed. Signing commits a dedicated PFS signature
+/// session (see [`pfs_ms::sign_archive`]); it is incremental, so each operation
+/// adds one signature covering just the content/node partitions it introduced.
+fn maybe_autosign(file: &str, key: Option<&String>) -> CliResult {
+    let Some(key) = key else { return Ok(()) };
+    let outcome =
+        pfs_ms::sign_archive(Path::new(file), Path::new(key), false).map_err(|e| e.to_string())?;
+    if outcome.sig_partition_uid.is_some() {
+        eprintln!(
+            "pfs: auto-signed {} partition(s)",
+            outcome.signed_uids.len()
+        );
+    }
+    Ok(())
 }
 
 /// Parsed command line: positionals, boolean flags, and `--flag value` pairs.
@@ -138,35 +174,28 @@ fn open_reader(path: &str) -> Result<FsReader<File>, String> {
 }
 
 fn cmd_mkfs(a: &[String]) -> CliResult {
-    let file = arg(a, 0, "<file>")?;
+    let p = parse_flags(a, &["key"])?;
+    let file = pos(&p, 0, "<file>")?;
     let f = File::create(file).map_err(|e| format!("cannot create '{file}': {e}"))?;
     FsWriter::mkfs(f, HashAlgo::Sha256).map_err(|e| e.to_string())?;
-    Ok(())
+    maybe_autosign(file, p.values.get("key"))
 }
 
 fn cmd_mkdir(a: &[String]) -> CliResult {
-    let file = arg(a, 0, "<file>")?;
-    let path = arg(a, 1, "<path>")?;
-    open_writer(file)?.mkdir(path).map_err(|e| e.to_string())
+    let p = parse_flags(a, &["key"])?;
+    let file = pos(&p, 0, "<file>")?;
+    let path = pos(&p, 1, "<path>")?;
+    open_writer(file)?.mkdir(path).map_err(|e| e.to_string())?;
+    maybe_autosign(file, p.values.get("key"))
 }
 
 fn cmd_put(a: &[String]) -> CliResult {
-    // `--store` (anywhere after the file) disables compression for this write.
-    let store = a.iter().any(|s| s == "--store");
-    let positional: Vec<&str> = a
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|s| *s != "--store")
-        .collect();
-    let file = positional
-        .first()
-        .copied()
-        .ok_or("missing argument: <file>")?;
-    let path = positional
-        .get(1)
-        .copied()
-        .ok_or("missing argument: <path>")?;
-    let src = positional.get(2).copied().unwrap_or("-");
+    // `--store` disables compression for this write; `--key` auto-signs.
+    let p = parse_flags(a, &["key"])?;
+    let store = p.flags.contains("store");
+    let file = pos(&p, 0, "<file>")?;
+    let path = pos(&p, 1, "<path>")?;
+    let src = p.positional.get(2).map(|s| s.as_str()).unwrap_or("-");
     let data = if src == "-" {
         let mut buf = Vec::new();
         std::io::stdin()
@@ -178,20 +207,25 @@ fn cmd_put(a: &[String]) -> CliResult {
     };
     let mut w = open_writer(file)?;
     w.set_compression(!store);
-    w.put_file(path, &data).map_err(|e| e.to_string())
+    w.put_file(path, &data).map_err(|e| e.to_string())?;
+    maybe_autosign(file, p.values.get("key"))
 }
 
 fn cmd_mv(a: &[String]) -> CliResult {
-    let file = arg(a, 0, "<file>")?;
-    let src = arg(a, 1, "<src>")?;
-    let dst = arg(a, 2, "<dst>")?;
-    open_writer(file)?.mv(src, dst).map_err(|e| e.to_string())
+    let p = parse_flags(a, &["key"])?;
+    let file = pos(&p, 0, "<file>")?;
+    let src = pos(&p, 1, "<src>")?;
+    let dst = pos(&p, 2, "<dst>")?;
+    open_writer(file)?.mv(src, dst).map_err(|e| e.to_string())?;
+    maybe_autosign(file, p.values.get("key"))
 }
 
 fn cmd_rm(a: &[String]) -> CliResult {
-    let file = arg(a, 0, "<file>")?;
-    let path = arg(a, 1, "<path>")?;
-    open_writer(file)?.rm(path).map_err(|e| e.to_string())
+    let p = parse_flags(a, &["key"])?;
+    let file = pos(&p, 0, "<file>")?;
+    let path = pos(&p, 1, "<path>")?;
+    open_writer(file)?.rm(path).map_err(|e| e.to_string())?;
+    maybe_autosign(file, p.values.get("key"))
 }
 
 fn cmd_ls(a: &[String]) -> CliResult {
@@ -264,32 +298,34 @@ fn cmd_verify(a: &[String]) -> CliResult {
 }
 
 fn cmd_create(a: &[String]) -> CliResult {
-    let p = parse_flags(a, &[])?;
-    let archive = p.positional.first().ok_or("missing argument: <archive>")?;
-    let dir = p.positional.get(1).ok_or("missing argument: <dir>")?;
+    let p = parse_flags(a, &["key"])?;
+    let archive = pos(&p, 0, "<archive>")?;
+    let dir = pos(&p, 1, "<dir>")?;
     let opts = SyncOptions {
         compress: !p.flags.contains("store"),
         metadata: !p.flags.contains("no-metadata"),
         delete: false,
     };
-    pfs_ms::create_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())
+    pfs_ms::create_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())?;
+    maybe_autosign(archive, p.values.get("key"))
 }
 
 fn cmd_update(a: &[String]) -> CliResult {
-    let p = parse_flags(a, &[])?;
-    let archive = p.positional.first().ok_or("missing argument: <archive>")?;
-    let dir = p.positional.get(1).ok_or("missing argument: <dir>")?;
+    let p = parse_flags(a, &["key"])?;
+    let archive = pos(&p, 0, "<archive>")?;
+    let dir = pos(&p, 1, "<dir>")?;
     let opts = SyncOptions {
         compress: !p.flags.contains("store"),
         metadata: !p.flags.contains("no-metadata"),
         delete: p.flags.contains("delete"),
     };
-    pfs_ms::update_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())
+    pfs_ms::update_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())?;
+    maybe_autosign(archive, p.values.get("key"))
 }
 
 fn cmd_compact(a: &[String]) -> CliResult {
     let p = parse_flags(a, &[])?;
-    let file = p.positional.first().ok_or("missing argument: <file>")?;
+    let file = pos(&p, 0, "<file>")?;
     // In-place when <out> is omitted; otherwise write a fresh file.
     let out = p.positional.get(1).map(String::as_str).unwrap_or(file);
     pfs_ms::compact_archive(Path::new(file), Path::new(out)).map_err(|e| e.to_string())
@@ -317,4 +353,63 @@ fn cmd_extract(a: &[String]) -> CliResult {
 
     pfs_ms::extract_archive(Path::new(archive), Path::new(dir), at, metadata)
         .map_err(|e| e.to_string())
+}
+
+fn cmd_keygen(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &[])?;
+    let priv_out = pos(&p, 0, "<priv_out>")?;
+    let pub_out = pos(&p, 1, "<pub_out>")?;
+    let s = pcf_sig_cli::keygen(priv_out, pub_out).map_err(|e| e.to_string())?;
+    println!(
+        "wrote private key {priv_out} and public key {pub_out}\nfingerprint {}",
+        pcf_sig_cli::hex(&s.fingerprint)
+    );
+    Ok(())
+}
+
+fn cmd_sign(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &["key"])?;
+    let file = pos(&p, 0, "<file>")?;
+    let key = p
+        .values
+        .get("key")
+        .ok_or("missing required flag --key <priv>")?;
+    let outcome = pfs_ms::sign_archive(Path::new(file), Path::new(key), p.flags.contains("resign"))
+        .map_err(|e| e.to_string())?;
+    match outcome.sig_partition_uid {
+        None => println!(
+            "nothing to sign ({} partition(s) already signed by this key)",
+            outcome.skipped_already_signed
+        ),
+        Some(uid) => {
+            let mut msg = format!(
+                "signed {} partition(s) into PCFSIG_SIG {}",
+                outcome.signed_uids.len(),
+                pcf_sig_cli::hex(&uid)
+            );
+            if outcome.skipped_already_signed > 0 {
+                msg.push_str(&format!(
+                    "; skipped {} already signed",
+                    outcome.skipped_already_signed
+                ));
+            }
+            println!("{msg}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_verify_sig(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &["key"])?;
+    let file = pos(&p, 0, "<file>")?;
+    let trusted = p.values.get("key").map(Path::new);
+    let recheck = !p.flags.contains("no-recheck");
+    let summary = pcf_sig_cli::verify_file(file, trusted, recheck).map_err(|e| e.to_string())?;
+    print!("{}", pcf_sig_cli::format_verify(&summary));
+    if !pcf_sig_cli::all_valid(&summary)
+        || (summary.trusted_fingerprint.is_some() && !summary.trusted_match)
+    {
+        return Err("signature verification failed".to_string());
+    }
+    Ok(())
 }

@@ -104,3 +104,50 @@ jobs:
         with:
           name: pfs-ms-coverage-lcov
           path: reference/PFS-MS-v1.0/lcov.info
+
+  pfs-tool:
+    name: pfs tool (smoke test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reference/PFS-MS-v1.0
+      - name: Build pfs binary
+        run: cargo build --bin pfs --verbose
+        working-directory: reference/PFS-MS-v1.0
+      - name: Smoke-test pfs CLI
+        run: |
+          PFS="$GITHUB_WORKSPACE/target/debug/pfs"
+
+          # mkfs + basic file and directory operations
+          $PFS mkfs /tmp/t.pfs
+          $PFS mkdir /tmp/t.pfs /docs
+          printf 'hello world' | $PFS put /tmp/t.pfs /docs/hello.txt -
+          $PFS ls /tmp/t.pfs
+          $PFS verify /tmp/t.pfs
+          $PFS log /tmp/t.pfs
+          CONTENT=$($PFS cat /tmp/t.pfs /docs/hello.txt)
+          test "$CONTENT" = "hello world"
+
+          # mv and rm
+          $PFS mv /tmp/t.pfs /docs/hello.txt /docs/hello2.txt
+          $PFS rm /tmp/t.pfs /docs/hello2.txt
+
+          # create → extract round-trip
+          mkdir -p /tmp/src/sub
+          printf 'file one' > /tmp/src/a.txt
+          printf 'file two' > /tmp/src/sub/b.txt
+          $PFS create /tmp/a.pfs /tmp/src --no-metadata
+          $PFS verify /tmp/a.pfs
+          mkdir /tmp/out
+          $PFS extract /tmp/a.pfs /tmp/out --no-metadata
+          diff -r /tmp/src /tmp/out
+
+          # update → extract round-trip after file modification
+          printf 'file one v2' > /tmp/src/a.txt
+          $PFS update /tmp/a.pfs /tmp/src --no-metadata
+          rm -rf /tmp/out && mkdir /tmp/out
+          $PFS extract /tmp/a.pfs /tmp/out --no-metadata
+          diff -r /tmp/src /tmp/out

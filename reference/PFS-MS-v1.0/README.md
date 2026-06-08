@@ -150,6 +150,37 @@ on extract; pass `--no-metadata` (on either side) to skip this, and `--store` to
 disable compression. Symlinks and other non-regular files are skipped with a
 warning.
 
+### Signing (PCF-SIG)
+
+`pfs` can sign archives with [PCF-SIG](../PCF-SIG-v1.0) (Ed25519). Because
+PFS-MS is append-only with a backward-linked session chain, a signature is
+**committed as its own PFS session** carrying the `PCFSIG_KEY` / `PCFSIG_SIG`
+partitions — not appended out of band — so `verify` keeps working.
+
+```
+# Generate a keypair (delegates to the pcf-sig tool).
+cargo run --bin pfs -- keygen id.key id.pub
+
+# Sign content + node records not yet signed by this key (incremental).
+cargo run --bin pfs -- sign       fs.pfs --key id.key          # no-op if nothing new
+cargo run --bin pfs -- sign       fs.pfs --key id.key --resign # re-sign everything
+
+# Verify embedded signatures (optionally assert a trusted public key).
+cargo run --bin pfs -- verify-sig fs.pfs --key id.pub
+```
+
+Every mutating command (`mkfs`, `mkdir`, `put`, `mv`, `rm`, `create`, `update`)
+also accepts `--key <priv>` to **auto-sign** right after its commit, so each
+operation adds one signature covering just the partitions it introduced:
+
+```
+cargo run --bin pfs -- mkfs fs.pfs --key id.key
+echo hi | cargo run --bin pfs -- put fs.pfs hello.txt - --key id.key
+```
+
+Signatures cover file content and node records; PFS-MS's own inter-session hash
+chain (checked by `verify`) already makes session records tamper-evident.
+
 ## Layout
 
 ```
