@@ -16,6 +16,8 @@ on:
     paths:
       - 'reference/PCF-SIG-v1.0/**'
       - 'implementations/**/pcf-sig/**'
+      - 'reference/PCF-DCP-v1.0/**'
+      - 'implementations/**/pcf-dcp/**'
       - 'implementations/ts/package.json'
       - 'implementations/ts/package-lock.json'
       - 'implementations/dotnet/Directory.Build.props'
@@ -25,6 +27,8 @@ on:
     paths:
       - 'reference/PCF-SIG-v1.0/**'
       - 'implementations/**/pcf-sig/**'
+      - 'reference/PCF-DCP-v1.0/**'
+      - 'implementations/**/pcf-dcp/**'
       - 'implementations/ts/package.json'
       - 'implementations/ts/package-lock.json'
       - 'implementations/dotnet/Directory.Build.props'
@@ -164,6 +168,114 @@ jobs:
         if: always()
         with:
           name: cross-port-vectors
+          path: |
+            /tmp/rust.bin
+            /tmp/ts.bin
+            /tmp/php.bin
+            /tmp/dotnet.bin
+
+  cross-port-byte-exact-dcp:
+    name: all DCP writers produce identical bytes
+    runs-on: ubuntu-latest
+    # Expected SHA-256 of the canonical 700-byte DCP vector (spec Section 17).
+    env:
+      EXPECTED_SHA256: b9bb59794abed008863063886d8d0daa810c44939c1c5d29449475ced8156b90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: implementations/ts/package-lock.json
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: hash, mbstring
+          coverage: none
+          tools: composer:v2
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # ---- Rust reference writer --------------------------------------------
+      - name: Generate Rust reference vector
+        run: cargo run -p pcf-dcp --example gen_testvector -- /tmp/rust.bin
+
+      # ---- TypeScript writer ------------------------------------------------
+      - name: Install npm deps and build pcf
+        working-directory: implementations/ts
+        run: |
+          npm ci
+          npm run build -w @kduma-oss/pcf
+      - name: Generate TS vector
+        working-directory: implementations/ts
+        run: npm run gen-testvector -w @kduma-oss/pcf-dcp -- /tmp/ts.bin
+
+      # ---- PHP writer -------------------------------------------------------
+      - name: Install composer deps
+        working-directory: implementations/php/pcf-dcp
+        run: composer install --prefer-dist --no-progress --no-interaction
+      - name: Generate PHP vector
+        working-directory: implementations/php/pcf-dcp
+        run: php examples/gen_testvector.php /tmp/php.bin
+
+      # ---- .NET writer ------------------------------------------------------
+      - name: Generate .NET vector
+        run: |
+          mkdir -p /tmp/dotnet-gen
+          cat > /tmp/dotnet-gen/GenTestVector.csproj <<'EOF'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net8.0</TargetFramework>
+              <Nullable>disable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <ProjectReference Include="$(GITHUB_WORKSPACE)/implementations/dotnet/pcf-dcp/src/Pcf.Dcp/Pcf.Dcp.csproj" />
+            </ItemGroup>
+          </Project>
+          EOF
+          cat > /tmp/dotnet-gen/Program.cs <<'EOF'
+          using System.IO;
+          using Pcf.Dcp;
+          File.WriteAllBytes(args[0], ReferenceVector.Build());
+          EOF
+          dotnet run --project /tmp/dotnet-gen/GenTestVector.csproj -c Release -- /tmp/dotnet.bin
+
+      # ---- Compare ----------------------------------------------------------
+      - name: All four DCP writers agree on byte-exact output
+        run: |
+          set -euo pipefail
+          ls -l /tmp/rust.bin /tmp/ts.bin /tmp/php.bin /tmp/dotnet.bin
+          fail=0
+          for f in /tmp/rust.bin /tmp/ts.bin /tmp/php.bin /tmp/dotnet.bin; do
+            d=$(sha256sum "$f" | awk '{print $1}')
+            echo "$f -> $d"
+            if [ "$d" != "$EXPECTED_SHA256" ]; then
+              echo "::error::$f sha256 = $d (expected $EXPECTED_SHA256)"
+              fail=1
+            fi
+            if ! cmp -s /tmp/rust.bin "$f"; then
+              echo "::error::$f differs from /tmp/rust.bin"
+              fail=1
+            fi
+          done
+          if [ "$fail" != "0" ]; then
+            echo "Cross-port DCP writer interop FAILED"
+            exit 1
+          fi
+          echo "All four DCP writers produced sha256 = $EXPECTED_SHA256"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cross-port-vectors-dcp
           path: |
             /tmp/rust.bin
             /tmp/ts.bin
