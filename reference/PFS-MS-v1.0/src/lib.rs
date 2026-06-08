@@ -38,6 +38,7 @@
 //! assert_eq!(r.read_path("docs/hello.txt").unwrap(), b"Hello, world\n");
 //! ```
 
+mod compact;
 mod compress;
 pub mod consts;
 mod delta;
@@ -52,6 +53,7 @@ mod tree;
 mod vector;
 mod writer;
 
+pub use compact::{compact, compact_archive};
 pub use compress::{compress_deflate, decompress};
 pub use consts::*;
 pub use dirsync::{create_archive, extract_archive, session_at_time, update_archive, SyncOptions};

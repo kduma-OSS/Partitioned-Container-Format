@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use pcf::{Container, HashAlgo};
-use pcf_compact::{atomic_write, compact_bytes, format_size, CompactError};
+use pcf_compact::{atomic_write, compact_bytes, format_size, is_pfs_ms, CompactError};
 
 fn uid(n: u8) -> [u8; 16] {
     let mut u = [0u8; 16];
@@ -214,4 +214,64 @@ fn compacts_trailer_mode_input() {
     assert!(compacted.len() < bytes.len());
     let mut c = Container::open(Cursor::new(compacted)).unwrap();
     assert_eq!(c.entries().unwrap().len(), 3);
+}
+
+/// Build a PCF container that looks like a PFS-MS file: it carries a partition
+/// of the PFS_SESSION application type (0xAAAA0002). Built with the `pcf` API
+/// only — `pcf-compact` must not depend on the `pfs-ms` crate.
+fn build_pfs_like() -> Vec<u8> {
+    let mut c = Container::create_with(Cursor::new(Vec::new()), 8, HashAlgo::Sha256).unwrap();
+    c.add_partition(0x0000_0001, uid(1), "node", &[1; 16], 16, HashAlgo::Sha256)
+        .unwrap();
+    // The PFS_SESSION partition that marks this as a PFS-MS file.
+    c.add_partition(
+        0xAAAA_0002,
+        uid(2),
+        "session",
+        &[2; 32],
+        32,
+        HashAlgo::Sha256,
+    )
+    .unwrap();
+    c.into_storage().into_inner()
+}
+
+#[test]
+fn detects_pfs_ms_file() {
+    assert!(is_pfs_ms(&build_pfs_like()).unwrap());
+}
+
+#[test]
+fn non_pfs_not_flagged() {
+    assert!(!is_pfs_ms(&build_sample(5, &[])).unwrap());
+}
+
+#[test]
+fn pfs_ms_error_message_points_to_pfs_compact() {
+    let err = CompactError::PfsMsInput(PathBuf::from("/data/store.pfs"));
+    let msg = err.to_string();
+    assert!(msg.contains("PFS-MS"), "message names the format: {msg}");
+    assert!(
+        msg.contains("pfs compact"),
+        "message points to the fix: {msg}"
+    );
+    assert!(
+        msg.contains("/data/store.pfs"),
+        "message names the file: {msg}"
+    );
+    assert!(
+        msg.contains("--allow-pfs"),
+        "message names the override: {msg}"
+    );
+}
+
+#[test]
+fn allow_pfs_bypasses_library_compaction() {
+    // The library `compact_bytes` is unguarded (the guard lives in the binary's
+    // `--allow-pfs` path): forcing compaction yields a still-valid plain PCF.
+    let bytes = build_pfs_like();
+    let compacted = compact_bytes(&bytes, true, true).expect("forced compaction");
+    let mut c = Container::open(Cursor::new(compacted)).unwrap();
+    // Both partitions survive as a flat PCF set (the PFS structure is gone).
+    assert_eq!(c.entries().unwrap().len(), 2);
 }

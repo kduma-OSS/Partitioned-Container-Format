@@ -131,6 +131,20 @@ cargo run --bin pfs -- extract backup.pfs ./restore --at 2          # by session
 cargo run --bin pfs -- extract backup.pfs ./restore --at-time 1700000000000
 ```
 
+### Compaction
+
+`pfs compact` rebuilds a multi-session file into a single fresh session holding
+the current tree, **discarding history** (Section 15): deleted nodes are gone,
+superseded versions and delta chains collapse to the newest full content, and
+abandoned tails are reclaimed. The output is a fully valid, verifiable PFS-MS
+file. (Generic `pcf-compact` must *not* be used on a PFS-MS file — it would
+corrupt the session chain.)
+
+```
+cargo run --bin pfs -- compact fs.pfs            # in place
+cargo run --bin pfs -- compact fs.pfs out.pfs    # to a new file
+```
+
 POSIX permission bits and modification time are captured on import and restored
 on extract; pass `--no-metadata` (on either side) to skip this, and `--store` to
 disable compression. Symlinks and other non-regular files are skipped with a
@@ -184,12 +198,14 @@ reference/PFS-MS-v1.0/
 │   ├── tree.rs      # liveness, tree, reconstruction (Sections 9.3, 10)
 │   ├── fs.rs        # high-level FsReader
 │   ├── dirsync.rs   # directory <-> archive tooling (create/update/extract)
+│   ├── compact.rs   # single-session compaction (Section 15)
 │   ├── vector.rs    # canonical Section 17 reference vector
 │   └── bin/pfs.rs   # demo CLI
 ├── tests/
 │   ├── roundtrip.rs       # end-to-end black-box tests
 │   ├── coverage.rs        # targeted error-path / edge-case tests
 │   ├── dirsync.rs         # directory create/update/extract round-trips
+│   ├── compact.rs         # single-session compaction round-trips
 │   └── spec_compliance.rs # one test per normative MUST (R1..R8, W2/W3)
 └── examples/
     └── gen_testvector.rs  # writes pfs_ms_testvector.bin + hex dumps

@@ -34,9 +34,21 @@ FLAGS:
         --no-verify       skip integrity verification before and after
                           compaction (default: verify both)
         --force           overwrite an existing --output path
+        --allow-pfs       compact a PFS-MS file anyway (produces a plain PCF;
+                          DISCARDS the multi-session filesystem structure)
     -q, --quiet           suppress the savings report on stderr
     -h, --help            show help
 ```
+
+### PFS-MS files are refused by default
+
+Generic PCF compaction repacks entries into shared table blocks and rewrites
+every `table_hash`, which destroys a PFS-MS file's session chain (the result no
+longer scans or verifies as PFS-MS). `pcf-compact` therefore **refuses** an
+input that carries a `PFS_SESSION` partition (type `0xAAAA0002`) and points you
+at `pfs compact`, which rebuilds it as a fresh single-session snapshot. Pass
+`--allow-pfs` to force a plain-PCF compaction that intentionally discards the
+PFS structure.
 
 ### Examples
 

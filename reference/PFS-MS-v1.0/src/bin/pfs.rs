@@ -17,6 +17,7 @@
 //! pfs create  <archive> <dir> [--store] [--no-metadata]
 //! pfs update  <archive> <dir> [--delete] [--store] [--no-metadata]
 //! pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]
+//! pfs compact <file> [<out>]   # rebuild as one fresh session (discards history)
 //! pfs keygen     <priv_out> <pub_out>
 //! pfs sign       <file> --key <priv> [--resign]
 //! pfs verify-sig <file> [--key <trusted_pub>] [--no-recheck]
@@ -70,6 +71,7 @@ fn run(args: &[String]) -> CliResult {
         "create" => cmd_create(rest),
         "update" => cmd_update(rest),
         "extract" => cmd_extract(rest),
+        "compact" => cmd_compact(rest),
         "keygen" => cmd_keygen(rest),
         "sign" => cmd_sign(rest),
         "verify-sig" => cmd_verify_sig(rest),
@@ -83,7 +85,7 @@ fn run(args: &[String]) -> CliResult {
 
 fn print_usage() {
     eprintln!(
-        "usage:\n  pfs mkfs    <file> [--key <priv>]\n  pfs mkdir   <file> <path> [--key <priv>]\n  pfs put     <file> <path> [<src|->] [--store] [--key <priv>]\n  pfs mv      <file> <src> <dst> [--key <priv>]\n  pfs rm      <file> <path> [--key <priv>]\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata] [--key <priv>]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata] [--key <priv>]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]\n  pfs keygen     <priv_out> <pub_out>\n  pfs sign       <file> --key <priv> [--resign]\n  pfs verify-sig <file> [--key <trusted_pub>] [--no-recheck]\n\nmutating commands accept --key <priv> to auto-sign after the commit."
+        "usage:\n  pfs mkfs    <file> [--key <priv>]\n  pfs mkdir   <file> <path> [--key <priv>]\n  pfs put     <file> <path> [<src|->] [--store] [--key <priv>]\n  pfs mv      <file> <src> <dst> [--key <priv>]\n  pfs rm      <file> <path> [--key <priv>]\n  pfs ls      <file> [<path>]\n  pfs cat     <file> <path>\n  pfs get     <file> <path> <out>\n  pfs log     <file>\n  pfs verify  <file>\n  pfs create  <archive> <dir> [--store] [--no-metadata] [--key <priv>]\n  pfs update  <archive> <dir> [--delete] [--store] [--no-metadata] [--key <priv>]\n  pfs extract <archive> <dir> [--at <seq>] [--at-time <unix_ms>] [--no-metadata]\n  pfs compact <file> [<out>]\n  pfs keygen     <priv_out> <pub_out>\n  pfs sign       <file> --key <priv> [--resign]\n  pfs verify-sig <file> [--key <trusted_pub>] [--no-recheck]\n\nmutating commands accept --key <priv> to auto-sign after the commit."
     );
 }
 
@@ -319,6 +321,14 @@ fn cmd_update(a: &[String]) -> CliResult {
     };
     pfs_ms::update_archive(Path::new(archive), Path::new(dir), &opts).map_err(|e| e.to_string())?;
     maybe_autosign(archive, p.values.get("key"))
+}
+
+fn cmd_compact(a: &[String]) -> CliResult {
+    let p = parse_flags(a, &[])?;
+    let file = pos(&p, 0, "<file>")?;
+    // In-place when <out> is omitted; otherwise write a fresh file.
+    let out = p.positional.get(1).map(String::as_str).unwrap_or(file);
+    pfs_ms::compact_archive(Path::new(file), Path::new(out)).map_err(|e| e.to_string())
 }
 
 fn cmd_extract(a: &[String]) -> CliResult {

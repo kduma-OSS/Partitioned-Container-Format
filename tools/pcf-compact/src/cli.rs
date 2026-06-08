@@ -17,6 +17,7 @@ pub struct Args {
     pub verify: bool,
     pub quiet: bool,
     pub force: bool,
+    pub allow_pfs: bool,
 }
 
 #[derive(Debug)]
@@ -38,6 +39,8 @@ FLAGS:
         --no-verify       skip integrity verification before and after
                           compaction (default: verify both)
         --force           overwrite an existing --output path
+        --allow-pfs       compact a PFS-MS file anyway (produces a plain PCF;
+                          DISCARDS the multi-session filesystem structure)
     -q, --quiet           suppress the savings report on stderr
     -h, --help            show this help
 
@@ -56,6 +59,7 @@ pub fn parse(argv: &[String]) -> Result<Parsed, String> {
     let mut verify = true;
     let mut quiet = false;
     let mut force = false;
+    let mut allow_pfs = false;
 
     fn value(argv: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
         *i += 1;
@@ -72,6 +76,7 @@ pub fn parse(argv: &[String]) -> Result<Parsed, String> {
             "-o" | "--output" => output = Some(PathBuf::from(value(argv, &mut i, &a)?)),
             "--no-verify" => verify = false,
             "--force" => force = true,
+            "--allow-pfs" => allow_pfs = true,
             "-q" | "--quiet" => quiet = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown flag: {other}"));
@@ -98,5 +103,6 @@ pub fn parse(argv: &[String]) -> Result<Parsed, String> {
         verify,
         quiet,
         force,
+        allow_pfs,
     }))
 }

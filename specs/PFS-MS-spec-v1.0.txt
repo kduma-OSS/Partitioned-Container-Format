@@ -1021,10 +1021,18 @@ Table of Contents
    can reconstruct the tree "as of" any session_seq by ignoring records with a
    higher seq -- a natural time-travel facility that needs no extra storage.
 
-   Finalization. A finalized PFS-MS file MAY be compacted with the PCF
-   compaction operation (PCF Section 11.5), which is a full rewrite into a new
-   file; this reclaims superseded versions and abandoned tails at the cost of
-   discarding history.
+   Finalization. A finalized PFS-MS file MAY be compacted to reclaim superseded
+   versions and abandoned tails, at the cost of discarding history. This is a
+   PROFILE-AWARE rewrite, NOT the generic PCF compaction operation (PCF Section
+   11.5): the generic operation repacks entries into shared Table Blocks and
+   rewrites every table_hash, which destroys the single-PFS_SESSION-per-HEAD
+   invariant (Section 6) and the inter-session commitments member_blocks_digest
+   and prev_session_hash (Section 8), so the result no longer scans or verifies
+   as PFS-MS. A conforming implementation MUST NOT apply generic PCF compaction
+   to a PFS-MS file. Instead, PFS-MS compaction resolves the live tree at the
+   head (Section 11) and re-emits it as a single fresh session (session_seq = 1,
+   prev_session_hash all-zero), storing every file as DIRECT content. The
+   reference implementation exposes this as `pfs compact`.
 
 
 -------------------------------------------------------------------------------
