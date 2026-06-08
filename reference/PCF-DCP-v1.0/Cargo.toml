@@ -1,0 +1,25 @@
+[package]
+name = "pcf-dcp"
+version = "0.0.8"
+edition = "2021"
+description = "Reference implementation of PCF-DCP v1.0, the PCF Dynamic Container Partition profile"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+homepage = "https://github.com/kduma-OSS/Partitioned-Container-Format"
+readme = "README.md"
+keywords = ["pcf", "dcp", "container", "deduplication", "fragmentation"]
+categories = ["encoding", "filesystem"]
+
+# This crate is a *reference* implementation of the PCF-DCP profile. Like the
+# `pcf` crate it builds on, it favours a direct, auditable mapping onto the
+# written specification (`specs/PCF-DCP-spec-v1.0.txt`) over raw performance.
+
+[[bin]]
+name = "dcp"
+path = "src/bin/dcp.rs"
+
+[dependencies]
+# The PCF-DCP profile is layered strictly above PCF v1.0; every byte container
+# operation goes through the reference PCF crate. The arena reuses PCF's Table
+# Block, Partition Entry, and table-hash primitives directly.
+pcf = { path = "../PCF-v1.0", version = "0.0.8" }

@@ -1,0 +1,1356 @@
+===============================================================================
+        PCF-DCP -- Dynamic Container Partition Profile
+                     Specification Version 1.0
+===============================================================================
+
+Status of This Document
+
+   This document specifies version 1.0 of PCF-DCP, an application-level
+   profile that uses the Partitioned Container Format (PCF) version 1.0 to
+   store a set of inner partitions that may each GROW, SHRINK, and be MUTATED
+   IN THE MIDDLE without relocating their neighbours, inside a single PCF
+   partition that acts as a self-contained arena.
+
+   PCF-DCP does NOT modify, extend, or fork PCF. A PCF-DCP file is a fully
+   conforming PCF v1.0 file. All structures defined here live inside the data
+   region of one PCF partition (the "DCP container") and inside the
+   application-defined portions of PCF entries. This profile is layered
+   strictly above the PCF specification; where the two appear to conflict, the
+   PCF specification governs the byte container and this document governs only
+   the interpretation of the DCP container partition's contents.
+
+   The profile version described here is major version 1, minor version 0.
+
+
+-------------------------------------------------------------------------------
+Table of Contents
+-------------------------------------------------------------------------------
+
+   1.  Introduction
+   2.  Relationship to PCF
+       2.1  Relationship to PCF-SIG
+       2.2  Compatibility with the PCF File Trailer
+   3.  Conventions and Terminology
+       3.1  Requirement Keywords
+       3.2  Terminology
+       3.3  Data Types and Byte Order
+   4.  Profile Model Overview
+       4.1  The DCP Container Partition
+       4.2  The Arena and Relative Offsets
+       4.3  Free Space and the Bump Allocator
+       4.4  No Nested Containers
+   5.  Partition Types and Reserved Values
+   6.  DCP Header
+   7.  Inner Partition Table
+       7.1  Reuse of the PCF Table Block
+       7.2  Reinterpretation of Inner Partition Entry Fields
+   8.  Fragment Table
+       8.1  Fragment Table Header
+       8.2  Fragment Entry
+       8.3  Logical Content Reconstruction
+       8.4  The SHARED Flag and Copy-on-Write
+   9.  Integrity Model
+       9.1  Inner Partition Data Hash
+       9.2  Inner Table Block Hash
+       9.3  Fragment-Table Protection
+       9.4  Container Data Hash and Sealed Mode
+  10.  Operations (Informative)
+       10.1 In-Place Editing via the Fragment Table
+       10.2 Deduplication
+       10.3 Compaction and Defragmentation
+       10.4 Promotion and the Promotion Invariant
+  11.  Reader Algorithms (Informative)
+  12.  Writer Algorithms (Informative)
+  13.  Conformance and Validation
+  14.  Versioning
+  15.  Future Considerations (Informative)
+  16.  Assumptions and Design Decisions (Informative)
+  17.  Test Vectors
+   Appendix A. Field Layout Summary
+   Appendix B. Type and Constant Registry
+
+
+-------------------------------------------------------------------------------
+1. Introduction
+-------------------------------------------------------------------------------
+
+   PCF stores each partition as a CONTIGUOUS prefix of a pre-allocated region
+   (PCF Section 6): its used data occupies [start_offset, start_offset +
+   used_bytes), and growth beyond max_length requires relocating the whole
+   partition. This is simple and fast, but it offers no way to grow a partition
+   that is boxed in by its neighbours, and no way to insert or delete bytes in
+   the middle of a partition without rewriting everything after the edit.
+
+   PCF-DCP adds exactly that capability, without touching the container format.
+   It defines ONE new application partition type, the DCP CONTAINER (type
+   0xAAAC0001). The data region of a DCP container is a self-contained ARENA
+   holding any number of INNER PARTITIONS. Each inner partition's bytes are
+   described not by a single contiguous range but by a FRAGMENT TABLE: an
+   ordered list of EXTENTS (arbitrary (offset, length) slices of the arena)
+   whose concatenation is the partition's logical content. Because content is
+   addressed indirectly through extents, an inner partition can:
+
+      - GROW by appending a new extent anywhere in free arena space;
+      - SHRINK by dropping or trimming trailing extents;
+      - be MUTATED IN THE MIDDLE -- overwrite, insert, or delete a byte range
+        -- by splitting the affected extents and rewriting only the changed
+        bytes into a fresh extent, never moving the unchanged bytes and never
+        disturbing other inner partitions.
+
+   When the DCP container is the last region in the file, its arena can grow
+   toward the end of the file without bound, giving the inner partitions
+   effectively unlimited room to expand.
+
+   A central design requirement is the PROMOTION INVARIANT: an inner partition
+   can be promoted to an ordinary top-level PCF partition, and an ordinary
+   partition can be demoted into a DCP container, with its PCF identity and
+   integrity (uid, type, label, used_bytes, data_hash) byte-for-byte preserved.
+   This is what makes the profile composable with cryptographic signing
+   (Section 2.1): a signature over an inner partition's content survives
+   promotion, defragmentation, and arena relocation.
+
+   Two further capabilities fall out of the extent model almost for free and
+   are specified here as OPTIONAL: extents MAY be SHARED between inner
+   partitions (deduplication, Section 10.2), and the arena MAY be compacted to
+   reclaim free space and defragment partitions (Section 10.3). A per-extent
+   SHARED flag (Section 8.4) makes safe copy-on-write editing explicit so that
+   private (unshared) extents can still be overwritten cheaply in place.
+
+
+-------------------------------------------------------------------------------
+2. Relationship to PCF
+-------------------------------------------------------------------------------
+
+   A PCF-DCP file MUST be a conforming PCF v1.0 file (PCF Section 12). In
+   particular:
+
+      - The 20-byte PCF File Header is present at offset 0 with the exact PCF
+        magic and version_major = 1, version_minor = 0.
+
+      - The DCP container is a normal PCF partition with its own PCF Partition
+        Entry: a unique 16-byte PCF uid, a start_offset, a max_length, a
+        used_bytes, and a data_hash. Its type is the application value
+        0xAAAC0001, permitted by PCF Section 7.1 (any value in
+        0x00000001..0xFFFFFFFE is available to the application).
+
+      - The PCF partition table is a chain of PCF Table Blocks linked by
+        next_table_offset, terminated by 0.
+
+   A DCP container's PCF data_hash_algo_id is normally 0 (none, Section 9.4):
+   the container's integrity is carried INSIDE the arena, by the inner table
+   and inner data hashes, so that appending to one inner partition costs O(the
+   change) rather than O(the whole container).
+
+   A generic PCF reader that knows nothing of this profile sees a valid file.
+   It traverses the top-level Table Block chain, enumerates the DCP container
+   as one ordinary partition, and verifies every top-level table_hash. It does
+   not descend into the arena and assigns the arena bytes no meaning -- exactly
+   as PCF is content-agnostic about any partition (PCF Section 1). Reconstructing
+   the inner partitions is the job of a DCP-aware reader (Section 11). The
+   container partition does not, and need not, appear on any top-level chain as
+   anything other than one opaque partition.
+
+   PCF-DCP constrains, but does not change, how these PCF facilities are used.
+   The DCP container reuses PCF's own Table Block (74 bytes) and Partition Entry
+   (141 bytes) structures, byte-for-byte, INSIDE the arena to describe the inner
+   partitions (Section 7). The only genuinely new structure is the Fragment
+   Table (Section 8); everything else is PCF reused recursively.
+
+2.1  Relationship to PCF-SIG
+
+   PCF-SIG (a sibling profile defining cryptographic signatures over PCF
+   partitions) signs a partition by committing to a fixed set of its PCF entry
+   fields. That set is exactly {uid, type, label, used_bytes, data_hash_algo_id,
+   data_hash}; it deliberately EXCLUDES start_offset and max_length, so that a
+   signature survives any change to a partition's physical placement or
+   reservation (PCF-SIG "relocation stability").
+
+   This set is, field-for-field, the PROMOTION INVARIANT of this profile
+   (Section 10.4): promotion, demotion, defragmentation, and arena relocation
+   change only start_offset, max_length, and physical layout, never any of the
+   six protected fields. Consequently a PCF-SIG signature over an inner
+   partition remains valid whether the partition currently lives inside a DCP
+   container or has been promoted to the top level.
+
+   Discoverability. PCF-SIG locates a partition to verify by resolving its uid
+   over the set of partitions it can enumerate. A plain PCF-SIG verifier
+   enumerates only the top-level Table Block chain and therefore CANNOT see a
+   partition that currently lives inside a DCP container; it reports such a uid
+   as missing (a per-entry condition, not a malformed file). A DCP-aware
+   reader removes this limitation by extending the resolvable set to include
+   every inner partition of every DCP container (Section 11): the set of
+   partitions resolvable by uid becomes (top-level partitions) UNION (the inner
+   partitions of all DCP containers). This is a reader-side extension of the
+   search scope; it changes no PCF-SIG byte and no PCF-SIG rule.
+
+   To be signable in place, an inner partition MUST carry a CRYPTOGRAPHIC
+   data_hash_algo_id (PCF IDs 16, 17, or 18), as required by PCF-SIG. The DCP
+   container itself, carrying data_hash_algo_id = 0, is not signable as a blob
+   unless it is sealed (Section 9.4).
+
+   uid uniqueness. Because uids are resolved across the union above, a Writer
+   MUST keep every inner partition's PCF uid unique across the WHOLE FILE, not
+   merely within one container (PCF requires uniqueness among live partitions
+   in a file; this profile reaffirms it across the container boundary).
+   Promotion MUST therefore be a MOVE -- the inner entry is removed as the
+   top-level entry is added -- never a copy that would leave two live entries
+   sharing a uid.
+
+2.2  Compatibility with the PCF File Trailer
+
+   PCF v1.0 defines an OPTIONAL File Trailer: when the PCF File Header's
+   partition_table_offset holds the all-ones sentinel, the top-level
+   partition-table head is recorded in a fixed trailer at the end of the file
+   (and the table chain MAY be backward-linked). This lets append-only writers
+   commit without rewriting the header. PCF-DCP is fully compatible with both
+   header-pointer and trailer-mode host files:
+
+      - A DCP-aware Reader MUST locate the top-level table head through the PCF
+        layer (which resolves the trailer when present); it MUST NOT assume the
+        File Header's partition_table_offset is a real offset. In trailer mode
+        that field is the sentinel, not the table position. Once the top-level
+        partitions are enumerated, locating and reading a DCP container is
+        unchanged: the container is one ordinary PCF partition.
+
+      - Whether the host file uses a header pointer or a trailer is invisible to
+        the arena: the DCP Header, Inner Table Block chain, and Fragment Tables
+        are addressed by ARENA-RELATIVE offsets within the container's data
+        (Section 3.3) and never reference the enclosing file's layout.
+
+      - The arena itself does NOT contain a PCF trailer. The inner table is
+        always located by inner_table_offset in the DCP Header (Section 6); the
+        inner Table Block chain is forward-linked (next_table_offset), because a
+        DCP Writer rewrites the arena as a whole (Section 4.3, 10.3) and so has
+        no append-only motive to invert it.
+
+   A Writer MAY publish a finished DCP file in trailer mode (e.g. when the DCP
+   file is itself appended into a larger append-only host); doing so changes no
+   arena byte and leaves every inner partition, data_hash, and signature intact.
+   The test vector in Section 17 is given in classic header-pointer form.
+
+
+-------------------------------------------------------------------------------
+3. Conventions and Terminology
+-------------------------------------------------------------------------------
+
+3.1  Requirement Keywords
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in RFC 2119.
+
+3.2  Terminology
+
+   DCP container  A single PCF partition of type 0xAAAC0001 whose data region
+                  is a DCP arena. Often just "the container".
+
+   Arena          The data region of a DCP container: the byte range
+                  [start_offset, start_offset + used_bytes) of the container's
+                  PCF entry, holding the DCP Header, the inner table, the
+                  fragment tables, and the data extents.
+
+   Inner          A partition stored inside the arena, described by a PCF
+   partition      Partition Entry in the inner table (Section 7) and by a
+                  Fragment Table (Section 8). Its logical content is the
+                  concatenation of its extents.
+
+   Inner table    The PCF Table Block chain INSIDE the arena that lists the
+                  inner partitions. Distinct from the file's top-level table.
+
+   Fragment       A per-inner-partition structure: a chain of Fragment Table
+   Table          blocks listing that partition's extents in logical order.
+
+   Extent         A slice of the arena, an (offset, length) pair of bytes,
+                  referenced by one Fragment Entry. Extents MAY be SHARED by
+                  more than one Fragment Entry (Section 10.2).
+
+   Logical        The byte stream obtained by concatenating an inner
+   content        partition's DATA extents in fragment-table order (Section
+                  8.3). The unit that data_hash and signatures commit to.
+
+   Promotion      Moving an inner partition out of its container to become an
+                  ordinary top-level PCF partition (Section 10.4). Demotion is
+                  the reverse.
+
+   Bump pointer   The arena offset arena_used (Section 6): the next free byte
+                  for the default append-only allocator.
+
+   This document additionally uses, unchanged, the PCF terms File, Reader,
+   Writer, Partition, Partition Table, Table Block, Entry, and UID. A "PCF uid"
+   is the 16-byte PCF partition identifier.
+
+3.3  Data Types and Byte Order
+
+   PCF-DCP uses the same conventions as PCF Section 2.3. All multi-byte
+   integers are unsigned and LITTLE-ENDIAN (u8, u16, u32, u64). Byte arrays
+   (magics, uid, label, hashes) are stored in file order and are not subject
+   to endianness conversion.
+
+   ARENA-RELATIVE OFFSETS. Every offset stored INSIDE the arena -- the DCP
+   Header's pointers, an inner entry's start_offset, a Fragment Table's
+   next_fragtable_offset, and a Fragment Entry's extent_offset -- is a byte
+   offset RELATIVE TO THE START OF THE ARENA, i.e. relative to the DCP
+   container's PCF start_offset. The absolute file offset of an arena byte at
+   arena-relative offset r is (container.start_offset + r). Because the DCP
+   Header occupies arena offset 0, the relative value 0 is never a valid
+   pointer to any inner structure and is used as a chain terminator, mirroring
+   PCF's use of absolute offset 0 (PCF Section 4).
+
+
+-------------------------------------------------------------------------------
+4. Profile Model Overview
+-------------------------------------------------------------------------------
+
+4.1  The DCP Container Partition
+
+   A DCP container is one PCF partition. Everything this profile defines lives
+   in its arena. A file MAY contain several DCP containers and MAY freely mix
+   them with ordinary PCF partitions and with partitions of other profiles;
+   each DCP container is independent.
+
+4.2  The Arena and Relative Offsets
+
+   The arena is laid out as:
+
+      arena offset 0:
+      +======================================+
+      |             DCP Header               |  24 bytes (Section 6)
+      +======================================+
+      |   Inner Table Block chain            |  reused PCF Table Blocks +
+      |   (lists the inner partitions)       |  reused PCF Partition Entries
+      +======================================+    (Section 7)
+      |   Fragment Tables (one chain per      |  Section 8
+      |   inner partition)                    |
+      +======================================+
+      |   Data extents (the actual bytes,     |  referenced by Fragment Entries
+      |   possibly shared, possibly out of    |  (Section 8.2)
+      |   logical order, possibly fragmented) |
+      +======================================+  arena_used
+      |   Free arena tail (bump space)        |  grows; to EOF if container is
+      +======================================+    the last region in the file
+
+   As in PCF (PCF Section 3), the relative placement of these regions WITHIN
+   the arena is the Writer's responsibility; only the DCP Header's fixed
+   position at arena offset 0 is mandated. A Reader locates every structure by
+   following the pointers, never by assuming an order.
+
+4.3  Free Space and the Bump Allocator
+
+   Like PCF (PCF Section 5.3, A3), PCF-DCP does NOT encode free space. The DCP
+   Header stores arena_used, a single bump pointer: the arena bytes
+   [arena_used, container.max_length - container's reserved tail) are free, and
+   the default allocation policy is to hand out new extents at arena_used and
+   advance it. Reuse of the space freed by deleted or rewritten extents is a
+   Writer-side policy that leaves no on-disk trace; it is reclaimed in bulk by
+   compaction (Section 10.3). A Reader never needs free-space information.
+
+4.4  No Nested Containers
+
+   In version 1.0 a DCP container MUST NOT contain another DCP container: an
+   inner partition's type MUST NOT be 0xAAAC0001. Inner partitions are leaves.
+   This keeps reconstruction non-recursive and bounds reader complexity. (A
+   future major version MAY relax this; Section 15.)
+
+
+-------------------------------------------------------------------------------
+5. Partition Types and Reserved Values
+-------------------------------------------------------------------------------
+
+   PCF-DCP assigns the following PCF type value:
+
+      Type         Name           Meaning
+      -----------  -------------  -----------------------------------------
+      0xAAAC0001   DCP_CONTAINER  A partition whose data region is a DCP
+                                  arena (Section 4).
+      -----------  -------------  -----------------------------------------
+
+   The block 0xAAAC0000..0xAAAC00FF is reserved by this profile for future
+   related types, continuing the existing convention (0xAAAA* = PFS-MS,
+   0xAAAB* = PCF-SIG). Inner partitions carry whatever application type their
+   content requires (including the PCF RAW type 0xFFFFFFFF), with the single
+   restriction of Section 4.4 (no inner DCP_CONTAINER).
+
+   The PCF reserved values retain their PCF meaning at every level: type
+   0x00000000 and the NIL PCF uid MUST NOT be used for any live partition,
+   inner or top-level (PCF Section 7). The all-zero arena-relative offset is
+   reserved as a chain terminator (Section 3.3).
+
+
+-------------------------------------------------------------------------------
+6. DCP Header
+-------------------------------------------------------------------------------
+
+   The arena MUST begin, at arena offset 0, with the following 24-byte header.
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0      4    bytes  dcp_magic       = 0x50 0x44 0x43 0x50 ("PDCP")
+        4      1    u8     profile_version_major = 1
+        5      1    u8     profile_version_minor = 0
+        6      2    u16    flags           (reserved; MUST be 0)
+        8      8    u64    inner_table_offset   (rel; first Inner Table Block)
+       16      8    u64    arena_used           (bump pointer; next free rel)
+      ------  ----  -----  --------------------------------------------------
+      Total: 24 bytes
+
+   dcp_magic
+      MUST be the four bytes "PDCP" (0x50 0x44 0x43 0x50). A Reader MUST treat
+      a partition typed 0xAAAC0001 whose arena does not begin with this magic
+      as malformed.
+
+   profile_version_major, profile_version_minor
+      The PCF-DCP profile version of this container (Section 14). A Reader MUST
+      reject a container whose profile_version_major it does not implement and
+      SHOULD accept a higher profile_version_minor, ignoring features it does
+      not understand.
+
+   flags
+      Reserved in version 1.0; a Writer MUST set all bits to 0 and a Reader
+      MUST ignore them. (Reserved for future, layout-neutral hints introduced
+      by a profile minor bump.)
+
+   inner_table_offset
+      Arena-relative offset of the first Inner Table Block (Section 7). MUST be
+      >= 24 (it cannot point into the DCP Header). The value 0 would mean a
+      container with no inner table; a Writer SHOULD instead emit an empty
+      Inner Table Block (partition_count = 0) and point at it, but a Reader
+      MUST treat inner_table_offset == 0 as "no inner partitions".
+
+   arena_used
+      The bump pointer: arena-relative offset of the first free byte (Section
+      4.3). MUST be <= the container's PCF used_bytes. Every stored structure
+      and extent lies within [0, arena_used).
+
+   This profile defines no other fixed arena-wide field. In particular it
+   defines no arena-wide checksum; integrity is provided by the inner table
+   and inner data hashes (Section 9), and OPTIONALLY by sealing the whole
+   container (Section 9.4).
+
+
+-------------------------------------------------------------------------------
+7. Inner Partition Table
+-------------------------------------------------------------------------------
+
+7.1  Reuse of the PCF Table Block
+
+   The inner partitions are listed by a chain of PCF Table Blocks stored INSIDE
+   the arena, byte-for-byte identical in layout to the top-level partition
+   table (PCF Section 5). The chain begins at inner_table_offset and is
+   followed via each block's next_table_offset until it reaches 0; each block
+   is a 74-byte Table Block Header (PCF Section 5.1) followed by partition_count
+   141-byte Partition Entries (PCF Section 5.2).
+
+   All offsets within these blocks are ARENA-RELATIVE (Section 3.3): a block's
+   next_table_offset is an arena-relative offset (0 = end of chain), and each
+   entry's start_offset is an arena-relative offset (Section 7.2).
+
+   A block's table_hash is computed exactly as in PCF Section 8.4, over the
+   block's own [block, block + 74 + partition_count * 141) bytes with the
+   table_hash field treated as zero. Because the container's own PCF
+   data_hash_algo_id is normally 0, the inner table_hash is the primary
+   integrity anchor for the inner table; a Writer SHOULD therefore choose a
+   CRYPTOGRAPHIC table_hash_algo_id (PCF IDs 16, 17, 18) for inner blocks
+   (Section 9.2).
+
+7.2  Reinterpretation of Inner Partition Entry Fields
+
+   An inner Partition Entry uses the identical 141-byte PCF layout, but two
+   fields are REINTERPRETED for the arena. This reinterpretation applies ONLY
+   to entries in an inner table; a generic PCF reader never parses an inner
+   table (Section 2) and so never observes it.
+
+      type, uid, label, data_hash_algo_id, data_hash
+         Used with their normal PCF meaning. uid MUST be unique across the
+         whole file (Section 2.1). data_hash covers the partition's LOGICAL
+         content (Section 9.1), not any contiguous file range.
+
+      start_offset  (REINTERPRETED)
+         The ARENA-RELATIVE offset of this inner partition's first Fragment
+         Table block (Section 8), NOT the offset of contiguous data. MUST be
+         >= 24.
+
+      used_bytes
+         The length of the partition's LOGICAL content: the sum of its DATA
+         extent lengths (Section 8.3). This is the value data_hash covers.
+
+      max_length  (REINTERPRETED)
+         There is no contiguous reservation inside an arena; growth is by
+         appending extents (Section 10.1). A Writer MUST set max_length equal
+         to used_bytes, and a DCP-aware Reader MUST ignore max_length for inner
+         entries (it locates content via the Fragment Table, never via
+         start_offset + used_bytes). The equality keeps PCF's used_bytes <=
+         max_length invariant trivially satisfied (PCF Section 5.2).
+
+   All other PCF entry rules apply unchanged (non-NIL uid, non-zero type,
+   valid label, zero-filled field tails).
+
+
+-------------------------------------------------------------------------------
+8. Fragment Table
+-------------------------------------------------------------------------------
+
+   Each inner partition has exactly one Fragment Table, located by its entry's
+   (reinterpreted) start_offset. A Fragment Table is a singly linked chain of
+   one or more Fragment Table blocks; it lists the partition's extents in
+   LOGICAL order (the order in which they concatenate to form the content).
+
+8.1  Fragment Table Header
+
+   Each Fragment Table block begins with the following 9-byte header.
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0      8    u64    next_fragtable_offset  (rel; 0 = last block)
+        8      1    u8     fragment_count         (0..255 in THIS block)
+      ------  ----  -----  --------------------------------------------------
+      Total: 9 bytes
+
+   next_fragtable_offset
+      Arena-relative offset of the next Fragment Table block of THIS partition,
+      or 0 if this is the last block. A Reader MUST stop when it reads 0.
+
+   fragment_count
+      Number of Fragment Entries packed immediately after this header, 0..255.
+      A partition needing more than 255 extents chains further blocks, so the
+      number of extents per partition is unbounded (mirroring PCF's overflow
+      chain, PCF Section 5.3). The Fragment Entries follow immediately:
+
+         fragment[i] at  block + 9 + i * 18      (0 <= i < fragment_count)
+
+8.2  Fragment Entry
+
+   Each Fragment Entry is a fixed-size 18-byte record.
+
+      Offset  Size  Type   Field
+      (rel)
+      ------  ----  -----  --------------------------------------------------
+        0      8    u64    extent_offset   (rel; start of the extent's bytes)
+        8      8    u64    extent_length   (length of the extent in bytes)
+       16      1    u8     kind            (1 = DATA; see below)
+       17      1    u8     flags           (bit0 = SHARED; others reserved 0)
+      ------  ----  -----  --------------------------------------------------
+      Total: 18 bytes
+
+   extent_offset, extent_length
+      The extent is the arena byte range [extent_offset, extent_offset +
+      extent_length). Both endpoints MUST lie within [0, arena_used). Extents
+      MAY appear in any physical position, MAY be out of logical order
+      physically, and MAY overlap or coincide with extents of other entries
+      (sharing, Section 10.2). extent_length MAY be 0 (an empty extent
+      contributes no bytes; a Writer SHOULD avoid emitting them).
+
+   kind
+      Extent kind. Defined and RESERVED values:
+
+         0  RESERVED / INVALID. MUST NOT appear in a live Fragment Entry; like
+            PCF type 0, it guards against zero-filled records.
+         1  DATA. The extent's bytes are literal content (the only kind
+            defined in version 1.0).
+         2  HOLE  (RESERVED). Intended for sparse content (a run of zero bytes
+            with no backing storage). MUST NOT be written in version 1.0.
+         3  REF   (RESERVED). Intended for a reference to bytes outside this
+            container (cross-container sharing). MUST NOT be written in version
+            1.0.
+
+      A Reader encountering a kind it does not implement MUST treat the
+      affected inner partition as unreadable, but MUST NOT treat the container
+      or the file as malformed on that basis alone.
+
+   flags
+      Bit 0 (0x01) is SHARED (Section 8.4). All other bits are reserved and
+      MUST be 0 in version 1.0.
+
+8.3  Logical Content Reconstruction
+
+   The logical content of an inner partition is the concatenation, in
+   fragment-table order across the whole chain, of the bytes of its DATA
+   extents:
+
+      content = extent[0].bytes || extent[1].bytes || ... || extent[m-1].bytes
+
+   where extent[i].bytes = arena[extent_offset .. extent_offset + extent_length)
+   for the i-th DATA extent encountered while walking the Fragment Table chain
+   (block by block, entry by entry). RESERVED kinds (HOLE, REF) have no
+   version-1.0 contribution and render the partition unreadable to a v1.0
+   reader (Section 8.2).
+
+   The length of content MUST equal the inner entry's used_bytes. Sharing,
+   physical order, and fragmentation are invisible to this reconstruction:
+   content depends only on which bytes are named, in which logical order.
+
+8.4  The SHARED Flag and Copy-on-Write
+
+   The SHARED flag (flags bit 0) is a WRITER CONTRACT that makes safe in-place
+   editing explicit. It is purely advisory to Readers, which reconstruct
+   content identically regardless of its value.
+
+      SHARED set
+         The bytes referenced by this extent MUST NOT be overwritten in place.
+         Any modification of a logical range that this extent covers MUST be
+         performed COPY-ON-WRITE: split the extent and write the changed bytes
+         into a fresh, privately owned extent (Section 10.1), leaving the
+         shared bytes untouched.
+
+      SHARED clear
+         The extent is privately owned -- no other live Fragment Entry, in any
+         inner partition, references any of its bytes -- and a Writer MAY
+         overwrite those bytes in place.
+
+   Maintenance rules:
+
+      F1.  When a Writer creates a Fragment Entry that references (in whole or
+           in part) arena bytes already referenced by another live Fragment
+           Entry -- that is, at the moment it shares an extent (Section 10.2)
+           -- it MUST set SHARED on the new entry AND on every existing live
+           entry that references any of those bytes.
+
+      F2.  Writers only ever SET the SHARED flag. The flag is CLEARED only by
+           compaction (Section 10.3), which has the global view needed to
+           prove that an extent has become privately referenced again.
+
+   This asymmetry makes errors safe: a stale-SET flag (an extent marked SHARED
+   that is in fact no longer aliased) costs only an unnecessary copy-on-write
+   and is harmless; a stale-CLEAR flag would be dangerous (a Writer might
+   overwrite shared bytes), and rule F2 makes it unreachable. The flag is a
+   boolean "is aliased", NOT a reference count; no counts are stored on disk,
+   and liveness/aliasing is recomputed globally only at compaction.
+
+
+-------------------------------------------------------------------------------
+9. Integrity Model
+-------------------------------------------------------------------------------
+
+   Integrity layers cleanly, exactly as PCF intends (PCF Section 8.5):
+
+      - each inner partition's data_hash protects its logical content;
+      - each inner Table Block's table_hash protects the inner entries;
+      - the container's own PCF data_hash optionally protects the whole arena
+        (sealed mode);
+      - the top-level table_hash protects the container's PCF entry, and the
+        PCF header anchors the top-level chain.
+
+9.1  Inner Partition Data Hash
+
+   An inner entry's data_hash is computed, using the PCF Hash Algorithm
+   Registry and field encoding (PCF Sections 8.1, 8.2), over the partition's
+   LOGICAL content (Section 8.3) -- the reconstructed byte stream, NOT any
+   contiguous arena range. This is the natural generalisation of PCF Section
+   8.3 from a contiguous prefix to a fragmented stream.
+
+   Because data_hash commits to logical content only, it is INVARIANT under
+   every physical change that preserves content: fragmentation and
+   defragmentation, extent sharing and un-sharing, arena relocation, and
+   promotion/demotion. This invariance is the basis of the promotion invariant
+   (Section 10.4) and of PCF-SIG compatibility (Section 2.1).
+
+   An inner partition intended to be signed by PCF-SIG MUST use a cryptographic
+   data_hash_algo_id (PCF IDs 16, 17, 18); a value of 0 (none) is permitted for
+   unsigned inner partitions but then provides no verification.
+
+9.2  Inner Table Block Hash
+
+   Each inner Table Block carries its own table_hash, computed exactly as PCF
+   Section 8.4 over the block's header-plus-entries region within the arena.
+   Because the container normally carries data_hash_algo_id = 0, the inner
+   table_hash is the only integrity protection for the inner entries; a Writer
+   SHOULD use a cryptographic algorithm for it (PCF IDs 16, 17, 18). A Writer
+   MUST keep each inner table_hash consistent after any change to an inner
+   entry (the PCF hash cascade, PCF Section 8.5, applied within the arena).
+
+9.3  Fragment-Table Protection
+
+   The Fragment Tables are not covered by any dedicated hash. They do not need
+   one: any corruption of a Fragment Table that changes which bytes an inner
+   partition reconstructs changes its logical content and is therefore detected
+   by the partition's data_hash (Section 9.1). A corruption that leaves the
+   reconstructed content byte-identical (for example, redirecting an extent to
+   an identical run of bytes elsewhere) is by definition harmless, because the
+   content -- the thing this profile and PCF-SIG commit to -- is unchanged.
+
+9.4  Container Data Hash and Sealed Mode
+
+   By default a DCP container sets data_hash_algo_id = 0 so that incremental
+   edits do not force an O(arena) re-hash of the container's PCF entry. A
+   Writer MAY instead SEAL a finalized container by assigning it a cryptographic
+   PCF data_hash over its whole arena [start_offset, start_offset + used_bytes),
+   exactly as for any PCF partition (PCF Section 8.3). A sealed container is
+   itself signable as a blob by PCF-SIG, at the cost of recomputing the
+   container data_hash on every change; sealing is therefore appropriate only
+   for finalized containers.
+
+
+-------------------------------------------------------------------------------
+10. Operations (Informative)
+-------------------------------------------------------------------------------
+
+   The following is illustrative, not normative. All operations edit only the
+   acting inner partition's Fragment Table and append bytes/extents to free
+   arena space; no other inner partition is affected, and no unchanged bytes
+   are moved.
+
+10.1 In-Place Editing via the Fragment Table
+
+   Let an inner partition have logical content C reconstructed from its extents.
+   "Split at logical position p" means: find the extent covering p and, if p
+   falls inside it, replace that one Fragment Entry with two entries describing
+   the same bytes [.., p) and [p, ..). Splitting changes no data bytes.
+
+      Append N bytes
+         Write N bytes at arena_used; append a DATA Fragment Entry
+         (extent_offset = old arena_used, length = N, flags = 0); advance
+         arena_used by N; increase used_bytes by N.
+
+      Overwrite logical [p, p+n)
+         Split at p and at p+n. Write the n replacement bytes to free arena
+         space as a new private extent and replace the covered middle entries
+         with that one entry. If any covered extent had SHARED set, this
+         copy-on-write is REQUIRED (Section 8.4); the shared bytes are left
+         intact. used_bytes is unchanged.
+
+      Insert N bytes at logical p
+         Split at p. Write the N new bytes to free arena space; insert a DATA
+         entry between the two halves. used_bytes increases by N.
+
+      Delete logical [p, p+n)
+         Split at p and at p+n; drop the middle entries. No data bytes are
+         moved or freed in place; the orphaned bytes are reclaimed by
+         compaction. used_bytes decreases by n.
+
+      Truncate to length L
+         Split at L; drop all entries after it. used_bytes becomes L.
+
+   After any of these, the Writer recomputes the inner entry's data_hash over
+   the new logical content and the enclosing inner Table Block's table_hash
+   (Section 9). Removing an entire inner partition is the PCF entry-removal
+   procedure (PCF Section 11.4) applied to the inner table; its extents become
+   free arena space.
+
+10.2 Deduplication
+
+   Two Fragment Entries -- in the same or different inner partitions -- MAY
+   reference the same extent bytes. To deduplicate an identical run, a Writer
+   points a second Fragment Entry at the existing extent instead of writing the
+   bytes again, and applies maintenance rule F1 (Section 8.4): it sets SHARED
+   on the new entry and on every existing entry that aliases those bytes. No
+   on-disk reference count is kept; sharing is invisible to reconstruction and
+   to data_hash (Sections 8.3, 9.1).
+
+   Chunking strategy (fixed-size, content-defined, or none) and any in-memory
+   index of chunk hashes are entirely Writer-side and outside this
+   specification. A Reader never needs to know that any extent is shared.
+
+10.3 Compaction and Defragmentation
+
+   Compaction reclaims free arena space and MAY defragment partitions; it is a
+   full rewrite of the arena, intended for a finalized container. A
+   conforming compaction MUST PRESERVE SHARING: it collects the set of live
+   extents (the union over all inner partitions' Fragment Tables), copies each
+   distinct extent once, and rewrites every Fragment Entry to the new offset
+   via a (old -> new) map. This mark-and-sweep is also where the SHARED flag is
+   normalised: an extent that the global scan proves to be referenced exactly
+   once MAY have its SHARED flag cleared on the surviving entry (the only
+   permitted clearing, rule F2). A defragmenting compactor MAY additionally
+   rewrite a partition as a single contiguous extent.
+
+   Because compaction preserves every partition's logical content, every inner
+   data_hash is unchanged; only inner table_hashes (and, if sealed, the
+   container data_hash) are recomputed. A naive compactor that is not
+   sharing-aware still produces a CORRECT container -- it merely copies shared
+   bytes more than once, losing the deduplication.
+
+10.4 Promotion and the Promotion Invariant
+
+   Promotion moves an inner partition out to the top level:
+
+      P1.  Materialise the partition's logical content (Section 8.3) as a
+           contiguous region at some free file offset S.
+      P2.  Build a top-level PCF Partition Entry that COPIES the inner entry's
+           type, uid, label, used_bytes, data_hash_algo_id, and data_hash
+           verbatim, and sets start_offset = S and max_length = used_bytes.
+      P3.  Add that entry to a top-level Table Block (PCF Section 11.3) and
+           remove the inner entry from the inner table (PCF Section 11.4) -- a
+           single MOVE, so the uid is never duplicated (Section 2.1).
+      P4.  Recompute the affected top-level and inner table_hashes.
+
+   The six fields {type, uid, label, used_bytes, data_hash_algo_id, data_hash}
+   are byte-identical before and after; only start_offset and max_length
+   change, and only physical bytes move. Because data_hash commits to logical
+   content (Section 9.1) and the materialised contiguous bytes ARE that same
+   content, the promoted partition's data_hash verifies unchanged. This is the
+   PROMOTION INVARIANT, and it is exactly the set of fields a PCF-SIG signature
+   protects (Section 2.1), so a signature over the partition survives promotion.
+
+   Demotion (top-level partition -> inner partition of a DCP container) is the
+   reverse: copy the same six fields into a new inner entry, build a Fragment
+   Table for the bytes (typically one extent), and remove the top-level entry.
+   The same invariant holds.
+
+
+-------------------------------------------------------------------------------
+11. Reader Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+11.1 Open and enumerate inner partitions
+
+      read and verify the 20-byte PCF header (PCF 11.1)
+      for each top-level partition P (PCF 11.1):
+          if P.type != 0xAAAC0001: handle as a normal/other-profile partition
+          else:                    treat P as a DCP container:
+              A = P.start_offset                  // arena base (absolute)
+              read 24-byte DCP Header at A+0; verify dcp_magic == "PDCP"
+              if profile_version_major unsupported: reject this container
+              it = header.inner_table_offset
+              while it != 0:                      // inner Table Block chain
+                  read 74-byte block header at A+it; verify table_hash (PCF 8.4)
+                  for i in 0 .. partition_count-1:
+                      e = read 141-byte entry at A+it+74+i*141
+                      register inner partition e (key: e.uid)  // Section 2.1
+                  it = block.next_table_offset
+
+11.2 Reconstruct an inner partition's content
+
+      e  = the inner entry
+      ft = e.start_offset                         // arena-rel: first FragTable
+      out = []
+      while ft != 0:
+          read 9-byte FragTable header at A+ft
+          for j in 0 .. fragment_count-1:
+              g = read 18-byte Fragment Entry at A+ft+9+j*18
+              if g.kind != 1 (DATA): partition unreadable to v1.0 (Section 8.2)
+              out.append( arena[g.extent_offset .. +g.extent_length) )
+          ft = header.next_fragtable_offset
+      content = concat(out)
+      assert len(content) == e.used_bytes
+      if e.data_hash_algo_id != 0: verify hash(content) == e.data_hash
+
+11.3 Resolve a partition by uid (PCF-SIG-compatible scope, Section 2.1)
+
+      resolvable = (all top-level partitions)
+                 UNION (inner partitions of every DCP container)
+      find the unique entry whose uid matches; reconstruct (11.2) if inner.
+
+11.4 Promotion read-back
+
+      a promoted partition is an ordinary top-level partition; no DCP awareness
+      is needed to read or to PCF-SIG-verify it. Its uid and data_hash equal
+      those it had inside the container (Section 10.4).
+
+
+-------------------------------------------------------------------------------
+12. Writer Algorithms (Informative)
+-------------------------------------------------------------------------------
+
+   The following pseudocode is illustrative, not normative.
+
+12.1 Create a container
+
+      allocate a top-level partition entry, type = 0xAAAC0001,
+          data_hash_algo_id = 0 (unsealed), unique uid
+      arena: write DCP Header (magic, version, flags=0,
+             inner_table_offset -> empty Inner Table Block, arena_used)
+      maintain the top-level table_hash (PCF 8.5)
+
+12.2 Add an inner partition
+
+      write the content as one or more DATA extents at arena_used (advance it)
+      build a Fragment Table listing those extents (flags = 0 unless sharing)
+      build an inner Partition Entry (Section 7.2): start_offset -> the
+          Fragment Table, used_bytes = logical length, max_length = used_bytes,
+          data_hash over logical content (cryptographic if to be signed)
+      append the entry to an inner Table Block (PCF 11.3), recompute its
+          table_hash; update arena_used in the DCP Header
+
+12.3 Edit / append / dedup
+
+      perform the Section 10.1 / 10.2 operation on the partition's Fragment
+          Table; honour the SHARED flag (Section 8.4); recompute the inner
+          entry's data_hash and its block's table_hash
+
+12.4 Finalize
+
+      OPTIONALLY compact the arena, preserving sharing (Section 10.3)
+      OPTIONALLY seal the container with a cryptographic PCF data_hash
+          (Section 9.4) if it is to be signed as a blob
+
+
+-------------------------------------------------------------------------------
+13. Conformance and Validation
+-------------------------------------------------------------------------------
+
+   A conforming PCF-DCP Reader MUST:
+
+      R1.  Be a conforming PCF Reader (PCF Section 12, C1..C8). In particular it
+           validates the file as PCF independently of this profile.
+      R2.  For each partition of type 0xAAAC0001, verify dcp_magic and reject a
+           container whose profile_version_major it does not implement.
+      R3.  Traverse the inner Table Block chain from inner_table_offset to 0,
+           verifying each inner table_hash unless its algo id is 0 (PCF 8.4),
+           interpreting all in-arena offsets as arena-relative (Section 3.3).
+      R4.  Reconstruct an inner partition's content by concatenating its DATA
+           extents in fragment-table order (Section 8.3), and verify that the
+           length equals used_bytes and (unless algo id 0) that the content
+           matches data_hash.
+      R5.  Treat an inner partition as unreadable, but NOT the file as
+           malformed, if it uses a reserved kind or a hash algorithm the Reader
+           does not implement (Sections 8.2, 9.1).
+      R6.  When resolving partitions by uid (e.g. for PCF-SIG), include inner
+           partitions in scope (Section 2.1, 11.3) and treat a uid that is
+           non-unique across the whole file as malformed.
+      R7.  Treat as malformed: a missing/incorrect dcp_magic; an inner entry
+           with type 0x00000000, NIL uid, or type 0xAAAC0001 (Section 4.4); an
+           arena pointer or extent that falls outside [0, arena_used); a
+           reconstructed length that disagrees with used_bytes.
+
+   A conforming PCF-DCP Writer MUST:
+
+      W1.  Be a conforming PCF Writer (PCF Section 12, W1..W5) at every level
+           (top-level entries and inner entries alike).
+      W2.  Begin each arena with a valid 24-byte DCP Header (Section 6) and
+           keep arena_used accurate as the bump pointer.
+      W3.  Store every in-arena offset as arena-relative (Section 3.3); set
+           each inner entry's start_offset to its Fragment Table and its
+           max_length equal to used_bytes (Section 7.2).
+      W4.  Give every inner partition a file-globally-unique, non-NIL uid
+           (Section 2.1) and never type an inner partition 0xAAAC0001.
+      W5.  Maintain the hash cascade within the arena: recompute an inner
+           entry's data_hash over its logical content and its block's
+           table_hash after any change (Section 9).
+      W6.  Honour the SHARED flag (Section 8.4): perform copy-on-write for any
+           extent marked SHARED, set SHARED on all aliases when sharing an
+           extent (F1), and clear it only during sharing-preserving compaction
+           (F2). Compaction MUST preserve sharing (Section 10.3).
+      W7.  Use a cryptographic data_hash_algo_id for any inner partition that
+           is to be signed by PCF-SIG (Section 2.1), and treat promotion as a
+           MOVE that preserves the six protected fields (Section 10.4).
+
+   As in PCF, the format TRUSTS the Writer for physical layout. A DCP-aware
+   Reader is NOT required to validate that extents do not overlap unintentionally,
+   that the arena has no gaps, or that free space is minimal; such a container
+   is not, by those facts alone, non-conforming (PCF Section 12). Intentional
+   extent overlap is the deduplication mechanism (Section 10.2).
+
+
+-------------------------------------------------------------------------------
+14. Versioning
+-------------------------------------------------------------------------------
+
+   PCF-DCP carries its own profile version in every DCP Header
+   (profile_version_major, profile_version_minor), independent of the PCF
+   container version (which remains 1.0).
+
+      A profile MAJOR change denotes an incompatible change to the arena
+      layout or to reconstruction semantics (for example, changing the
+      Fragment Entry size, or allowing nested containers). A Reader MUST reject
+      a container whose profile_version_major it does not implement.
+
+      A profile MINOR change denotes a backward-compatible addition that does
+      not alter any existing byte layout -- for example, assigning meaning to a
+      reserved DCP Header flag bit, defining a reserved Fragment Entry flags
+      bit, or activating a reserved kind value (HOLE, REF). A Reader
+      implementing major M MUST read containers with the same M and an equal or
+      lower minor, and SHOULD accept a higher minor, ignoring features it does
+      not understand.
+
+   Different DCP containers in one file MAY declare different profile minor
+   versions. This document defines profile version 1.0.
+
+
+-------------------------------------------------------------------------------
+15. Future Considerations (Informative)
+-------------------------------------------------------------------------------
+
+   Sparse content (HOLE). kind = 2 is reserved for runs of implicit zero bytes
+   with no backing extent, enabling sparse inner partitions; activating it is a
+   minor bump because it does not change any existing layout.
+
+   Cross-container references (REF). kind = 3 is reserved for an extent that
+   names bytes outside the current container (for example, another container's
+   arena or a top-level partition), enabling deduplication across container
+   boundaries. Its exact reference encoding is left to a future minor version.
+
+   Nested containers. Section 4.4 forbids inner DCP containers in v1.0 to keep
+   reconstruction non-recursive; a future MAJOR version could permit nesting.
+
+   Cryptographic signatures. An inner partition with a cryptographic data_hash
+   is directly signable in place by PCF-SIG once a reader includes inner
+   partitions in uid scope (Section 2.1); alternatively a sealed container
+   (Section 9.4) is signable as a blob. Either way the entry layouts here never
+   need to change, following PCF Section 13.
+
+   Finalization. A finalized container SHOULD be compacted (Section 10.3) to
+   reclaim free arena space; the whole file MAY additionally be compacted with
+   the PCF compaction operation (PCF Section 11.5).
+
+   Performance envelope. The extent/copy-on-write model is optimal for
+   write-once, append, and snapshot workloads. Heavy random in-place rewriting
+   remains correct but incurs the usual copy-on-write costs (fragmentation and
+   write amplification, as in copy-on-write filesystems), repaid by compaction.
+
+
+-------------------------------------------------------------------------------
+16. Assumptions and Design Decisions (Informative)
+-------------------------------------------------------------------------------
+
+   D1.  The profile changes nothing in PCF. It uses one application type
+        (0xAAAC0001) from the reserved block 0xAAAC00xx, permitted by PCF
+        Section 7, and reuses PCF's Table Block and Partition Entry structures
+        verbatim inside the arena.
+
+   D2.  Content is addressed indirectly through extents, so an inner partition
+        can grow, shrink, and be edited in the middle without relocating
+        neighbours or moving unchanged bytes -- the capability PCF's contiguous
+        model lacks (PCF Section 6, A4).
+
+   D3.  All in-arena offsets are arena-relative, so the whole arena -- and thus
+        every inner partition -- can be relocated as one block (e.g. by
+        compaction) without rewriting any in-arena pointer.
+
+   D4.  Free space is derived from a single bump pointer (arena_used), echoing
+        PCF's "free space is derived" decision (PCF A3, A9); reuse of freed
+        extents is Writer policy, reclaimed in bulk by compaction.
+
+   D5.  data_hash commits to LOGICAL content (the concatenation of extents),
+        not to any physical range, making it invariant under fragmentation,
+        sharing, relocation, and promotion. This single decision yields both
+        the promotion invariant and zero-cost deduplication.
+
+   D6.  The six PCF-SIG-protected fields equal the six fields preserved by
+        promotion/demotion/compaction, so signatures survive all of them. A
+        reader-side extension of uid scope (Section 2.1) makes inner partitions
+        signable in place without changing a single PCF-SIG byte.
+
+   D7.  Sharing is a boolean per-extent flag (SHARED), not a reference count:
+        Writers only set it (when aliasing), compaction alone clears it (with a
+        global view). Stale-set is safe (extra copy-on-write); stale-clear is
+        made unreachable. No counts live on disk.
+
+   D8.  The Fragment Table needs no hash of its own: any corruption that
+        changes reconstructed content is caught by data_hash, and any that does
+        not is harmless.
+
+   D9.  The container is unsealed (data_hash_algo_id = 0) by default so edits
+        cost O(change), with an OPTIONAL sealed mode (O(arena) re-hash) for a
+        finalized, blob-signable container.
+
+   D10. Inner partitions are leaves (no nested containers in v1.0), bounding
+        reader complexity; HOLE and REF kinds are reserved for a later minor
+        bump.
+
+   D11. Type 0x00000000, the NIL uid, the invalid kind 0, and the all-zero
+        arena offset all act as guards against accidental zero-filled records
+        and as chain terminators, mirroring PCF's guards (PCF A11, A15).
+
+
+-------------------------------------------------------------------------------
+17. Test Vectors
+-------------------------------------------------------------------------------
+
+   This section provides a complete, byte-exact reference file so that
+   independent implementations can verify conformance. The file is a DCP
+   container holding TWO inner partitions, and it demonstrates fragmentation,
+   deduplication via a shared extent, and the SHARED flag:
+
+      * Inner "A": type 0x00000010, uid = 16 x 0xA1, logical content the ASCII
+        string "Hello, World!" (13 bytes) stored as TWO extents -- "Hello, "
+        (7 bytes, PRIVATE) and "World!" (6 bytes, SHARED) -- protected by
+        SHA-256.
+      * Inner "B": type 0x00000010, uid = 16 x 0xB2, logical content "World!"
+        (6 bytes), stored as ONE extent that is the SAME arena bytes as A's
+        second extent (deduplication). Both references carry SHARED = 1.
+        Protected by SHA-256.
+
+   The DCP container itself is one top-level PCF partition: type 0xAAAC0001,
+   uid = 16 x 0xDC, label "dcp", data_hash_algo_id = 0 (unsealed). Both the
+   top-level Table Block and the inner Table Block are hashed with SHA-256. All
+   multi-byte integers are little-endian. Total file size is 700 bytes. An
+   implementation that builds the same logical container and emits this exact
+   canonical layout MUST produce these exact bytes. Note that B's data_hash
+   equals SHA-256("World!"), the SAME value a standalone PCF partition of
+   "World!" would carry -- demonstrating the promotion invariant (Section 10.4).
+
+   Top-level structure (absolute file offsets):
+
+      0x0000..0x0014   File Header                         (PCF, 20 bytes)
+      0x0014..0x005E   Top-level Table Block header        (PCF, 74 bytes)
+      0x005E..0x00EB   Top-level Partition Entry "dcp"     (PCF, 141 bytes)
+      0x00EB..0x02BC   DCP arena (the container's data)    (465 bytes)
+
+   Arena structure (arena-relative offsets; add 0x00EB for absolute):
+
+      rel 0x000..0x018   DCP Header                        (24 bytes)
+      rel 0x018..0x01F   extent "Hello, "                  (7 bytes)
+      rel 0x01F..0x025   extent "World!"                   (6 bytes, shared)
+      rel 0x025..0x052   Fragment Table A (2 entries)      (45 bytes)
+      rel 0x052..0x06D   Fragment Table B (1 entry)        (27 bytes)
+      rel 0x06D..0x1D1   Inner Table Block (2 entries)     (356 bytes)
+      arena_used = 0x1D1 (465)
+
+   ----  File Header (offset 0x0000, 20 bytes) -----------------------
+   0000  89 4B 50 52 54 0D 0A 1A                          magic = 89 'K' 'P' 'R' 'T' 0D 0A 1A
+   0008  01 00                                            version_major = 1
+   000A  00 00                                            version_minor = 0
+   000C  14 00 00 00 00 00 00 00                          partition_table_offset = 20
+
+   ----  Top-level Table Block (offset 0x0014, header 74 bytes) ------
+   0014  01                                               partition_count = 1
+   0015  00 00 00 00 00 00 00 00                          next_table_offset = 0 (end of chain)
+   001D  10                                               table_hash_algo = 16 (SHA-256)
+   001E  22 E5 05 13 61 0D A1 6E 02 A2 F7 C6 12 01 B5 04  table_hash (SHA-256 of this 74-byte header
+   002E  D8 19 FB CD 05 FF C0 5E 2F B2 3D 06 33 86 C9 53    with this field zeroed, plus the 1 entry)
+   003E  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   004E  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+
+   ----  Top-level Partition Entry 0 "dcp" (offset 0x005E, 141 bytes) -
+   005E  01 00 AC AA                                      type = 0xAAAC0001 (DCP_CONTAINER)
+   0062  DC DC DC DC DC DC DC DC DC DC DC DC DC DC DC DC  uid = 16 x 0xDC
+   0072  64 63 70 00 00 00 00 00 00 00 00 00 00 00 00 00  label[0..16]  = "dcp" then NUL padding
+   0082  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label[16..32] = NUL padding
+   0092  EB 00 00 00 00 00 00 00                          start_offset = 235  (arena base)
+   009A  D1 01 00 00 00 00 00 00                          max_length = 465
+   00A2  D1 01 00 00 00 00 00 00                          used_bytes = 465  (= arena_used)
+   00AA  00                                               data_hash_algo = 0 (none; unsealed)
+   00AB  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  data_hash = all zero (algo 0)
+   00BB  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero)
+   00CB  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero)
+   00DB  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero)
+
+   ====  DCP ARENA begins at 0x00EB (arena offset 0) ====
+
+   ----  DCP Header (arena 0x000 / file 0x00EB, 24 bytes) ------------
+   00EB  50 44 43 50                                      dcp_magic = "PDCP"
+   00EF  01                                               profile_version_major = 1
+   00F0  00                                               profile_version_minor = 0
+   00F1  00 00                                            flags = 0
+   00F3  6D 00 00 00 00 00 00 00                          inner_table_offset = 109 (arena-rel)
+   00FB  D1 01 00 00 00 00 00 00                          arena_used = 465 (arena-rel)
+
+   ----  Data extents (arena 0x018..0x025 / file 0x0103..0x0110) -----
+   0103  48 65 6C 6C 6F 2C 20                             extent "Hello, " (7 bytes, A private)
+   010A  57 6F 72 6C 64 21                                extent "World!"  (6 bytes, A+B shared)
+        (the two extents happen to be physically adjacent here, but each is
+         described by its own Fragment Entry; "World!" is referenced twice.)
+
+   ----  Fragment Table A (arena 0x025 / file 0x0110, 45 bytes) ------
+   0110  00 00 00 00 00 00 00 00                          next_fragtable_offset = 0 (last)
+   0118  02                                               fragment_count = 2
+   0119  18 00 00 00 00 00 00 00                          [0] extent_offset = 24
+   0121  07 00 00 00 00 00 00 00                          [0] extent_length = 7
+   0129  01                                               [0] kind = 1 (DATA)
+   012A  00                                               [0] flags = 0 (private)
+   012B  1F 00 00 00 00 00 00 00                          [1] extent_offset = 31
+   0133  06 00 00 00 00 00 00 00                          [1] extent_length = 6
+   013B  01                                               [1] kind = 1 (DATA)
+   013C  01                                               [1] flags = 1 (SHARED)
+
+   ----  Fragment Table B (arena 0x052 / file 0x013D, 27 bytes) ------
+   013D  00 00 00 00 00 00 00 00                          next_fragtable_offset = 0 (last)
+   0145  01                                               fragment_count = 1
+   0146  1F 00 00 00 00 00 00 00                          [0] extent_offset = 31 (same as A[1])
+   014E  06 00 00 00 00 00 00 00                          [0] extent_length = 6
+   0156  01                                               [0] kind = 1 (DATA)
+   0157  01                                               [0] flags = 1 (SHARED)
+
+   ----  Inner Table Block (arena 0x06D / file 0x0158, header 74 B) --
+   0158  02                                               partition_count = 2
+   0159  00 00 00 00 00 00 00 00                          next_table_offset = 0 (end of chain)
+   0161  10                                               table_hash_algo = 16 (SHA-256)
+   0162  BE 19 BB 14 7C 68 18 51 CA B7 01 C4 BF 9D 6C 62  table_hash (SHA-256 of this 74-byte header
+   0172  82 C0 CB 53 4F 06 BA 97 07 AB EF 01 AD 47 22 1D    with this field zeroed, plus the 2 entries)
+   0182  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   0192  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+
+   ----  Inner Partition Entry 0 "A" (arena 0x0B7 / file 0x01A2) -----
+   01A2  10 00 00 00                                      type = 0x00000010
+   01A6  A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1  uid = 16 x 0xA1
+   01B6  41 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label = "A" then NUL padding
+   01C6  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label (cont.)
+   01D6  25 00 00 00 00 00 00 00                          start_offset = 37  (arena-rel -> FragTable A)
+   01DE  0D 00 00 00 00 00 00 00                          max_length = 13  (= used_bytes)
+   01E6  0D 00 00 00 00 00 00 00                          used_bytes = 13  (logical content length)
+   01EE  10                                               data_hash_algo = 16 (SHA-256)
+   01EF  DF FD 60 21 BB 2B D5 B0 AF 67 62 90 80 9E C3 A5  data_hash = SHA-256("Hello, World!")
+   01FF  31 91 DD 81 C7 F7 0A 4B 28 68 8A 36 21 82 98 6F    (significant bytes continue)
+   020F  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   021F  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+
+   ----  Inner Partition Entry 1 "B" (arena 0x144 / file 0x022F) -----
+   022F  10 00 00 00                                      type = 0x00000010
+   0233  B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2  uid = 16 x 0xB2
+   0243  42 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label = "B" then NUL padding
+   0253  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  label (cont.)
+   0263  52 00 00 00 00 00 00 00                          start_offset = 82  (arena-rel -> FragTable B)
+   026B  06 00 00 00 00 00 00 00                          max_length = 6  (= used_bytes)
+   0273  06 00 00 00 00 00 00 00                          used_bytes = 6
+   027B  10                                               data_hash_algo = 16 (SHA-256)
+   027C  51 4B 6B B7 C8 46 EC FB 8D 2D 29 EF 0B 5C 79 B6  data_hash = SHA-256("World!")
+   028C  3E 6A E8 38 F1 23 DA 93 6F E8 27 FD A6 54 27 6C    (significant bytes continue)
+   029C  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+   02AC  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00    (zero padding)
+
+   Plain hex dump of the complete 700-byte file (16 bytes per row):
+
+   0000  89 4B 50 52 54 0D 0A 1A 01 00 00 00 14 00 00 00  .KPRT...........
+   0010  00 00 00 00 01 00 00 00 00 00 00 00 00 10 22 E5  ..............".
+   0020  05 13 61 0D A1 6E 02 A2 F7 C6 12 01 B5 04 D8 19  ..a..n..........
+   0030  FB CD 05 FF C0 5E 2F B2 3D 06 33 86 C9 53 00 00  .....^/.=.3..S..
+   0040  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0050  00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 00  ................
+   0060  AC AA DC DC DC DC DC DC DC DC DC DC DC DC DC DC  ................
+   0070  DC DC 64 63 70 00 00 00 00 00 00 00 00 00 00 00  ..dcp...........
+   0080  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0090  00 00 EB 00 00 00 00 00 00 00 D1 01 00 00 00 00  ................
+   00A0  00 00 D1 01 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   00B0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   00C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   00D0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   00E0  00 00 00 00 00 00 00 00 00 00 00 50 44 43 50 01  ...........PDCP.
+   00F0  00 00 00 6D 00 00 00 00 00 00 00 D1 01 00 00 00  ...m............
+   0100  00 00 00 48 65 6C 6C 6F 2C 20 57 6F 72 6C 64 21  ...Hello, World!
+   0110  00 00 00 00 00 00 00 00 02 18 00 00 00 00 00 00  ................
+   0120  00 07 00 00 00 00 00 00 00 01 00 1F 00 00 00 00  ................
+   0130  00 00 00 06 00 00 00 00 00 00 00 01 01 00 00 00  ................
+   0140  00 00 00 00 00 01 1F 00 00 00 00 00 00 00 06 00  ................
+   0150  00 00 00 00 00 00 01 01 02 00 00 00 00 00 00 00  ................
+   0160  00 10 BE 19 BB 14 7C 68 18 51 CA B7 01 C4 BF 9D  ......|h.Q......
+   0170  6C 62 82 C0 CB 53 4F 06 BA 97 07 AB EF 01 AD 47  lb...SO........G
+   0180  22 1D 00 00 00 00 00 00 00 00 00 00 00 00 00 00  "...............
+   0190  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   01A0  00 00 10 00 00 00 A1 A1 A1 A1 A1 A1 A1 A1 A1 A1  ................
+   01B0  A1 A1 A1 A1 A1 A1 41 00 00 00 00 00 00 00 00 00  ......A.........
+   01C0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   01D0  00 00 00 00 00 00 25 00 00 00 00 00 00 00 0D 00  ......%.........
+   01E0  00 00 00 00 00 00 0D 00 00 00 00 00 00 00 10 DF  ................
+   01F0  FD 60 21 BB 2B D5 B0 AF 67 62 90 80 9E C3 A5 31  .`!.+...gb.....1
+   0200  91 DD 81 C7 F7 0A 4B 28 68 8A 36 21 82 98 6F 00  ......K(h.6!..o.
+   0210  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0220  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 10  ................
+   0230  00 00 00 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2 B2  ................
+   0240  B2 B2 B2 42 00 00 00 00 00 00 00 00 00 00 00 00  ...B............
+   0250  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   0260  00 00 00 52 00 00 00 00 00 00 00 06 00 00 00 00  ...R............
+   0270  00 00 00 06 00 00 00 00 00 00 00 10 51 4B 6B B7  ............QKk.
+   0280  C8 46 EC FB 8D 2D 29 EF 0B 5C 79 B6 3E 6A E8 38  .F...-)..\y.>j.8
+   0290  F1 23 DA 93 6F E8 27 FD A6 54 27 6C 00 00 00 00  .#..o.'..T'l....
+   02A0  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00  ................
+   02B0  00 00 00 00 00 00 00 00 00 00 00 00              ............
+
+   Verification notes:
+
+      - The file is a conforming PCF v1.0 file: a generic PCF reader sees one
+        partition ("dcp", type 0xAAAC0001, used_bytes 465, data_hash algo 0)
+        and the top-level table_hash verifies.
+      - Reconstructing inner "A" concatenates extent [24,31) "Hello, " and
+        extent [31,37) "World!" -> "Hello, World!", whose SHA-256 is
+        df fd 60 21 ... 98 6f, matching A.data_hash; length 13 = used_bytes.
+      - Reconstructing inner "B" reads extent [31,37) "World!" -> SHA-256
+        51 4b 6b b7 ... 27 6c, matching B.data_hash; length 6 = used_bytes.
+        These are the SAME arena bytes A references at logical offset 7: a
+        shared extent referenced by two entries -- A[1] and B[0] -- each with
+        SHARED = 1 (flags bytes at 0x013C and 0x0157). A's other extent
+        "Hello, " is private (flags = 0 at 0x012A).
+      - Promoting "B" would write "World!" contiguously, set the top-level
+        entry's start_offset/max_length, and keep uid (16 x 0xB2) and data_hash
+        (51 4b 6b b7 ...) byte-identical -- the promotion invariant.
+
+
+-------------------------------------------------------------------------------
+Appendix A. Field Layout Summary
+-------------------------------------------------------------------------------
+
+   DCP Header (24 bytes, at arena offset 0)
+      0    4  bytes  dcp_magic = "PDCP" (50 44 43 50)
+      4    1  u8     profile_version_major = 1
+      5    1  u8     profile_version_minor = 0
+      6    2  u16    flags                      (reserved, = 0)
+      8    8  u64    inner_table_offset         (arena-rel; 0 = none)
+     16    8  u64    arena_used                 (bump pointer, arena-rel)
+
+   Inner Table Block (reused PCF Table Block; offsets arena-relative)
+      Table Block Header (74 B)   partition_count, next_table_offset (arena-rel,
+                                  0 = end), table_hash_algo_id, table_hash
+      Inner Partition Entry (141 B; PCF layout, two fields reinterpreted)
+         0    4  u32    type                    (NOT 0, NOT 0xAAAC0001)
+         4   16  bytes  uid                     (unique file-wide, non-NIL)
+        20   32  bytes  label
+        52    8  u64    start_offset            (arena-rel -> Fragment Table)
+        60    8  u64    max_length              (= used_bytes)
+        68    8  u64    used_bytes              (logical content length)
+        76    1  u8     data_hash_algo_id       (crypto if to be signed)
+        77   64  bytes  data_hash               (over logical content)
+
+   Fragment Table Header (9 bytes; offsets arena-relative)
+      0    8  u64    next_fragtable_offset      (arena-rel; 0 = last block)
+      8    1  u8     fragment_count             (0..255 in this block)
+
+   Fragment Entry (18 bytes, at block + 9 + i*18)
+      0    8  u64    extent_offset              (arena-rel)
+      8    8  u64    extent_length
+     16    1  u8     kind                       (1 = DATA; 0 invalid;
+                                                 2 HOLE / 3 REF reserved)
+     17    1  u8     flags                      (bit0 = SHARED; others 0)
+
+   Logical content = concatenation of DATA extents in fragment-table order.
+   data_hash and used_bytes describe that logical content (Sections 8.3, 9.1).
+
+   Container facilities used unchanged from PCF
+      File Header (20 B)        magic, version 1.0, partition_table_offset
+      Top-level Table Block     lists the DCP container (type 0xAAAC0001) among
+                                ordinary partitions
+      DCP container entry        start_offset = arena base, used_bytes =
+                                arena_used, data_hash_algo = 0 (unsealed) or
+                                crypto (sealed, Section 9.4)
+
+
+-------------------------------------------------------------------------------
+Appendix B. Type and Constant Registry
+-------------------------------------------------------------------------------
+
+   PCF partition types used by PCF-DCP
+      0xAAAC0001              DCP_CONTAINER (arena holding inner partitions)
+      0xAAAC0000..0xAAAC00FF  reserved by this profile for future types
+
+   Magics
+      "PDCP" = 0x50 0x44 0x43 0x50   (DCP Header)
+
+   Fragment Entry kind
+      0 = INVALID (reserved guard)   1 = DATA
+      2 = HOLE (reserved)            3 = REF (reserved)
+
+   Fragment Entry flags
+      bit 0 = SHARED (no in-place overwrite; copy-on-write required)
+      bits 1..7 reserved (MUST be 0)
+
+   Reinterpreted inner-entry fields (inside an arena only)
+      start_offset -> arena-relative offset of the Fragment Table
+      max_length   -> equal to used_bytes (no contiguous reservation)
+
+   Reserved arena value
+      arena-relative offset 0 = chain terminator / "none"
+
+   Structure sizes
+      DCP Header                   24 bytes
+      Fragment Table Header         9 bytes
+      Fragment Entry               18 bytes
+      (reused) Table Block Header  74 bytes (PCF)
+      (reused) Partition Entry    141 bytes (PCF)
+
+   Limits
+      Entries per (inner) Table Block   <= 255 (PCF u8 partition_count)
+      Inner partitions per container    unbounded (inner table chain)
+      Extents per Fragment Table block  <= 255 (u8 fragment_count)
+      Extents per inner partition       unbounded (Fragment Table chain)
+      Nesting                           inner partitions are leaves (no inner
+                                        DCP_CONTAINER in v1.0)
+
+   Hash algorithms        as PCF Section 8.1 (SHA-256 = 16 default/RECOMMENDED
+                          for inner data_hash and inner table_hash)
+
+   Profile version        major 1, minor 0   (PCF container version: 1.0)
+
+===============================================================================
+                       End of PCF-DCP Specification v1.0
+===============================================================================

@@ -82,6 +82,10 @@ pcf-debug fs.pcf decode
 - **Diagnostics** — gaps, overlaps, truncated regions, chain cycles, and hash
   mismatches, by severity.
 - **Decoded partitions** — field trees produced by the plugin decoders.
+  *Container* decoders also decode what they contain: a `DCP_CONTAINER`
+  (`0xAAAC0001`) reconstructs each inner partition's logical content and routes
+  it back through the registry, nesting the result under a *decoded inner
+  partitions* group (e.g. an inner `PFS_NODE` is shown as a full PFS field tree).
 
 ## Writing a decoder plugin
 
@@ -125,6 +129,11 @@ renderers display.
 The first decoder whose `matches` returns true wins; `raw` is always last and
 matches everything. `decode` must be infallible — on malformed input, return the
 fields you could read plus `warnings`.
+
+A *container* decoder may also override the optional `children` method to return
+the sub-partitions it holds (each as a `DecodedChild` carrying a reconstructed
+content blob). The pipeline decodes those recursively and nests them under the
+parent — see `dcp-container` (`src/plugin/dcp.rs`).
 
 The built-in `pfs-node` and `pfs-session` decoders (`src/plugin/pfs.rs`) are a
 complete worked example covering the PFS-MS record formats.

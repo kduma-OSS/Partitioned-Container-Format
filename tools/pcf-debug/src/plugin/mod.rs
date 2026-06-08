@@ -11,10 +11,12 @@
 //! (shared-library) backend could be added behind a feature without reworking
 //! any decoder.
 
+mod dcp;
 mod pcfsig;
 mod pfs;
 mod raw;
 
+pub use dcp::DcpContainerDecoder;
 pub use pcfsig::{PcfSigKeyDecoder, PcfSigSignatureDecoder};
 pub use pfs::{PfsNodeDecoder, PfsSessionDecoder};
 pub use raw::RawDecoder;
@@ -111,6 +113,22 @@ pub struct Decoded {
     pub warnings: Vec<String>,
 }
 
+/// A sub-partition surfaced by a *container* decoder (e.g. the inner partitions
+/// of a DCP container) whose reconstructed logical content should itself be
+/// decoded. Returned by [`PartitionDecoder::children`] and decoded recursively
+/// by [`crate::decode_recursive`].
+#[derive(Debug, Clone)]
+pub struct DecodedChild {
+    /// The sub-partition's application type.
+    pub partition_type: u32,
+    /// The sub-partition's 16-byte uid.
+    pub uid: [u8; 16],
+    /// The sub-partition's decoded label.
+    pub label: String,
+    /// The sub-partition's reconstructed logical content.
+    pub data: Vec<u8>,
+}
+
 /// A plugin that turns partition bytes into a field tree.
 pub trait PartitionDecoder {
     /// Stable identifier, used for `--decoder` selection and HTML anchors.
@@ -123,6 +141,14 @@ pub trait PartitionDecoder {
     /// Full decode. Must never panic: on malformed input it returns whatever
     /// fields it could read plus `warnings`.
     fn decode(&self, meta: &PartitionMeta, data: &[u8]) -> Decoded;
+
+    /// Sub-partitions contained within this partition whose reconstructed
+    /// content should itself be decoded (e.g. the inner partitions of a DCP
+    /// container). The default is none; only container-like decoders override
+    /// it. Must never panic: on malformed input it returns an empty list.
+    fn children(&self, _meta: &PartitionMeta, _data: &[u8]) -> Vec<DecodedChild> {
+        Vec::new()
+    }
 }
 
 /// An ordered set of decoders. The first decoder whose `matches` returns true
@@ -141,6 +167,7 @@ impl DecoderRegistry {
                 Box::new(PfsSessionDecoder),
                 Box::new(PcfSigKeyDecoder),
                 Box::new(PcfSigSignatureDecoder),
+                Box::new(DcpContainerDecoder),
                 Box::new(RawDecoder),
             ],
         }
@@ -166,6 +193,17 @@ impl DecoderRegistry {
         }
         // RawDecoder matches everything, so this is unreachable in practice.
         RawDecoder.decode(meta, data)
+    }
+
+    /// The sub-partitions of `data`, as reported by the first matching decoder
+    /// (mirrors [`Self::decode`]). Empty for non-container partitions.
+    pub fn children(&self, meta: &PartitionMeta, data: &[u8]) -> Vec<DecodedChild> {
+        for d in &self.decoders {
+            if d.matches(meta, data) {
+                return d.children(meta, data);
+            }
+        }
+        Vec::new()
     }
 
     /// Decode with a specific decoder by name, if present.

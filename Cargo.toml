@@ -4,6 +4,7 @@ members = [
     "reference/PCF-v1.0",
     "reference/PFS-MS-v1.0",
     "reference/PCF-SIG-v1.0",
+    "reference/PCF-DCP-v1.0",
     "tools/pcf-debug",
     "tools/pcf-compact",
     "tools/pcf-sig",
