@@ -8,6 +8,7 @@ coverage/
 pcf_testvector.bin
 *.bin
 !pcf-sig/testdata/canonical.bin
+!pcf-dcp/testdata/canonical.bin
 
 # --- editors ---
 .idea/

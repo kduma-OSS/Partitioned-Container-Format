@@ -190,6 +190,7 @@ jobs:
       - run: npm ci
       - run: npm run build -w @kduma-oss/pcf
       - run: npm run build -w @kduma-oss/pcf-sig
+      - run: npm run build -w @kduma-oss/pcf-dcp
       - name: npm publish pcf (OIDC trusted publishing, auto-provenance)
         run: |
           if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
@@ -203,6 +204,13 @@ jobs:
             npm publish -w @kduma-oss/pcf-sig --access public --dry-run
           else
             npm publish -w @kduma-oss/pcf-sig --access public
+          fi
+      - name: npm publish pcf-dcp
+        run: |
+          if [ "${{ needs.resolve.outputs.dry_run }}" = "true" ]; then
+            npm publish -w @kduma-oss/pcf-dcp --access public --dry-run
+          else
+            npm publish -w @kduma-oss/pcf-dcp --access public
           fi
 
   publish-nuget:
