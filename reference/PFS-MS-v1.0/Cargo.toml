@@ -41,10 +41,10 @@ filetime = "0.2"
 
 # Shared PCF-SIG command-line logic, so `pfs` can run keygen / verify-sig using
 # exactly the same implementation as the standalone `pcf-sig` tool.
-pcf-sig-cli = { path = "../../tools/pcf-sig", version = "0.0.8" }
+pcf-sig-cli = { path = "../../tools/pcf-sig", version = "0.0.9" }
 
 # The PCF-SIG signing primitives. Signing a PFS-MS file cannot simply append
 # partitions (that would break the backward-linked session chain); instead the
 # PCFSIG_KEY / PCFSIG_SIG partitions are committed as a dedicated PFS session
 # (see `src/sign.rs`), built from these primitives.
-pcf-sig = { path = "../PCF-SIG-v1.0", version = "0.0.8" }
+pcf-sig = { path = "../PCF-SIG-v1.0", version = "0.0.9" }
