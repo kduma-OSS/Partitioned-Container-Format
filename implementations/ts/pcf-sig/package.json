@@ -1,6 +1,6 @@
 {
   "name": "@kduma-oss/pcf-sig",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "description": "TypeScript implementation of PCF-SIG v1.0, the PCF Cryptographic Signatures profile",
   "license": "MIT OR Apache-2.0",
   "author": "Krystian Duma",
