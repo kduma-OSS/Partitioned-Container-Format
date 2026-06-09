@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>Pcf.Dcp</AssemblyName>
+    <RootNamespace>Pcf.Dcp</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Description>Reader/writer for PCF-DCP v1.0, the PCF Dynamic Container Partition profile.</Description>
+
+    <PackageId>KDuma.Pcf.Dcp</PackageId>
+    <PackageTags>pcf;pcf-dcp;container;deduplication;fragmentation</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- PCF-DCP is layered strictly above PCF v1.0; it adds no crypto
+         dependency (data/table hashing comes from the base PCF library). -->
+    <ProjectReference Include="..\..\..\pcf\src\Pcf\Pcf.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

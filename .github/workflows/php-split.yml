@@ -31,6 +31,7 @@ jobs:
         package:
           - { dir: 'implementations/php/pcf', repo: 'PHP-PCF-lib' }
           - { dir: 'implementations/php/pcf-sig', repo: 'PHP-PCF-SIG-lib' }
+          - { dir: 'implementations/php/pcf-dcp', repo: 'PHP-PCF-DCP-lib' }
     steps:
       - uses: actions/checkout@v4
         with:

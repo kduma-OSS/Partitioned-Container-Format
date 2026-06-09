@@ -24,6 +24,7 @@ jobs:
       - run: npm ci
       - run: npm run build -w @kduma-oss/pcf
       - run: npm run build -w @kduma-oss/pcf-sig
+      - run: npm run build -w @kduma-oss/pcf-dcp
 
   test:
     name: test (${{ matrix.os }})
@@ -41,10 +42,11 @@ jobs:
           cache-dependency-path: implementations/ts/package-lock.json
       - run: npm ci
       - run: npm test -w @kduma-oss/pcf
-      # pcf-sig imports the compiled @kduma-oss/pcf dist/; build pcf first
-      # so the workspace dependency resolves before vitest runs.
+      # pcf-sig and pcf-dcp import the compiled @kduma-oss/pcf dist/; build pcf
+      # first so the workspace dependency resolves before vitest runs.
       - run: npm run build -w @kduma-oss/pcf
       - run: npm test -w @kduma-oss/pcf-sig
+      - run: npm test -w @kduma-oss/pcf-dcp
 
   test-vector:
     name: regenerate spec test vector
@@ -71,12 +73,19 @@ jobs:
         run: |
           ls -l pcf-sig/pcfsig_testvector.bin
           test "$(wc -c < pcf-sig/pcfsig_testvector.bin)" = "966"
+      - name: Build and run the PCF-DCP test-vector example
+        run: npm run gen-testvector -w @kduma-oss/pcf-dcp -- pcf_dcp_testvector.bin
+      - name: Inspect PCF-DCP test vector
+        run: |
+          ls -l pcf-dcp/pcf_dcp_testvector.bin
+          test "$(wc -c < pcf-dcp/pcf_dcp_testvector.bin)" = "700"
       - uses: actions/upload-artifact@v4
         with:
           name: pcf-testvector-ts
           path: |
             implementations/ts/pcf/pcf_testvector.bin
             implementations/ts/pcf-sig/pcfsig_testvector.bin
+            implementations/ts/pcf-dcp/pcf_dcp_testvector.bin
 
   coverage:
     name: code coverage
@@ -95,9 +104,12 @@ jobs:
         run: npm run build -w @kduma-oss/pcf
       - name: Generate PCF-SIG coverage report (enforces >=90% line / 100% function)
         run: npm run coverage -w @kduma-oss/pcf-sig
+      - name: Generate PCF-DCP coverage report (enforces >=85% line / 90% function)
+        run: npm run coverage -w @kduma-oss/pcf-dcp
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov-ts
           path: |
             implementations/ts/pcf/coverage/lcov.info
             implementations/ts/pcf-sig/coverage/lcov.info
+            implementations/ts/pcf-dcp/coverage/lcov.info

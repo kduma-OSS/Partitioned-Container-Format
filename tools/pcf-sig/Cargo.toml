@@ -1,6 +1,6 @@
 [package]
 name = "pcf-sig-cli"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -26,10 +26,10 @@ path = "src/main.rs"
 
 [dependencies]
 # Generic PCF container access (enumerate partitions, read/append).
-pcf = { path = "../../reference/PCF-v1.0", version = "0.0.8" }
+pcf = { path = "../../reference/PCF-v1.0", version = "0.0.9" }
 
 # The PCF-SIG signing/verification primitives this tool drives.
-pcf-sig = { path = "../../reference/PCF-SIG-v1.0", version = "0.0.8" }
+pcf-sig = { path = "../../reference/PCF-SIG-v1.0", version = "0.0.9" }
 
 # UUIDv7 for the uids of newly written PCFSIG_SIG / PCFSIG_KEY partitions
 # (consistent with the recommendation in both the PCF and PFS-MS specs).

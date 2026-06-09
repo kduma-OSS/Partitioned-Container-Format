@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": [
     "pcf",
-    "pcf-sig"
+    "pcf-sig",
+    "pcf-dcp"
   ]
 }
